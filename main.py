@@ -120,7 +120,9 @@ def main():
 
         train_domains_loader[key] = utils.load_data(domains_path, key, train_file, window_size=args.window_size, step_size=args.step_size, batch_size=args.batch_size, train=True)
         test_domains_loader[key] = utils.load_data(domains_path, key, val_file, window_size=args.window_size, step_size=args.step_size, train=False)
-        
+        print(train_domains_loader[key])
+        print(test_domains_loader[key])
+        sys.exit(0)
         # print(f"Train loader for domain {key} has {len(train_domains_loader[key])} batches")
         # print(f"Test loader for domain {key} has {len(test_domains_loader[key])} batches")
         

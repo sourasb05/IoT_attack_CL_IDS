@@ -32,7 +32,7 @@ def train_domain_incremental_model(args, run_wandb, train_domain_loader, test_do
     exp_no=0
 
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
 
 
     performance_stability = {test_domain: [] for test_domain in test_domain_loader.keys()}

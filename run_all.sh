@@ -9,23 +9,25 @@ ENTITY="sourasb05"
 ARCH="LSTM_Attention"
 ALGO="WCL"
 SCENARIO="random"
-LR=0.05
-EPOCHS=500
-WINDOW=3
-STEP=2
-BATCH=128
+LR=0.01
+EPOCHS=50
+WINDOW=10
+STEP=3
+BATCH=32
 INPUT=13
-HIDDEN=128
+HIDDEN=64
 OUTPUT=2
-LAYERS=2
+LAYERS=3
 DROPOUT=0.5
-PATIENCE=450
+PATIENCE=30
 FORGET=0.01
 
+# Optional flags (leave empty or add --bidirectional)
+EXTRA_FLAGS=(--bidirectional)   # e.g., EXTRA_FLAGS=(--bidirectional)
 
 TS="$(date +%Y%m%d-%H%M%S)"
 
-for i in {1..10}; do
+for i in {1..2}; do
   PAD=$(printf "%02d" "$i")
   RUN_NAME="exp-${PAD}-${TS}"
 
@@ -50,9 +52,10 @@ for i in {1..10}; do
     --num_layers "$LAYERS"
     --dropout "$DROPOUT"
     --patience "$PATIENCE"
+    --forgetting_threshold "$FORGET"
   )
   # append optional flags safely
-
+  ARGS+=("${EXTRA_FLAGS[@]:-}")
 
   # show exactly what will be run (great for debugging)
   printf 'python main.py'; printf ' %q' "${ARGS[@]}"; printf '\n'
