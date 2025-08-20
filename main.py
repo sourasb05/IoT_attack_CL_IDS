@@ -111,12 +111,12 @@ def main():
         train_file = f"run_{exp_no:02d}_train.csv"
         val_file   = f"run_{exp_no:02d}_val.csv"
 
-        print(f"train_file: {train_file} | val_file: {val_file}")
+        # print(f"train_file: {train_file} | val_file: {val_file}")
         
         # print(f"Processing domain: {key} with {len(files)} datasets : {files}")
         # Check they exist inside this domain’s file list
-        if train_file in files and val_file in files:
-            print(f"Experiment {exp_no} | Domain: {key} | Train file: {train_file} | Val file:   {val_file}")
+        # if train_file in files and val_file in files:
+        #    print(f"Experiment {exp_no} | Domain: {key} | Train file: {train_file} | Val file:   {val_file}")
 
         train_domains_loader[key] = utils.load_data(domains_path, key, train_file, window_size=args.window_size, step_size=args.step_size, batch_size=args.batch_size, train=True)
         test_domains_loader[key] = utils.load_data(domains_path, key, val_file, window_size=args.window_size, step_size=args.step_size, train=False)
@@ -155,9 +155,9 @@ def main():
     if algorithm == "WCL":  
         if scenario == "random":
 
-            train_WCL.train_domain_incremental_model(args, train_domains_loader, test_domains_loader, device,
-                                        model, exp_no, num_epochs=200, learning_rate=0.05, patience=100, 
-                                        forgetting_threshold=0.01)
+            train_WCL.train_domain_incremental_model(args, run_wandb, train_domains_loader, test_domains_loader, device,
+                                        model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience)
+                                        
         else:
             train_WCL_gen.train_domain_incremental_model_gen(scenario, device, train_domains_loader, test_domains_loader, full_domains_loader, 
                                         model, exp_no, num_epochs=50, learning_rate=0.001, patience=10,forgetting_threshold=0.01)

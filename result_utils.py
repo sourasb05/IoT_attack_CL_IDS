@@ -1,5 +1,8 @@
 
-def Calculate_BWT(performance_stability):
+from itertools import accumulate
+
+
+def compute_BWT(performance_stability, train_domain_order):
     bwt_dict = {}
     for k, vals in performance_stability.items():
         if len(vals) < 2:
@@ -7,9 +10,9 @@ def Calculate_BWT(performance_stability):
         f = vals[0]
         bwt_dict[k] = [v-f for v in vals[1:]]
     
-    bwt_values = avg_bwt_per_domain(bwt_dict)
-    return bwt_values, bwt_dict
-def avg_bwt_per_domain(data: dict)  -> list[float]:
+    bwt_values, bwt_values_dict = avg_bwt_per_domain(bwt_dict, train_domain_order)
+    return bwt_values, bwt_dict, bwt_values_dict
+def avg_bwt_per_domain(data, domain_order):
     if not data:
         return []
     
@@ -20,18 +23,34 @@ def avg_bwt_per_domain(data: dict)  -> list[float]:
         col = [vals[-offset] for vals in data.values() if len(vals) >= offset]
         out.append(sum(col) / len(col))
 
-    return out
+    keys = domain_order[1: 1+ len(out)]
+    bwt_values_dict = {k: v for k, v in zip(keys, out)}
+    
+    return out, bwt_values_dict
 
 
-def Calculate_FWT(performance_plasticity: dict[str]) -> dict[str, list[float]]:
+def compute_FWT(performance_plasticity, domain_order):
     fwt_dict = {}
     for k, vals in performance_plasticity.items():
         if len(vals) == 1:
             continue
  
         fwt_dict[k] = vals[0] - vals[1]
+    fwt_values = avg_fwt_per_domain(fwt_dict, domain_order)    
 
-    return fwt_dict
+
+    return fwt_values, fwt_dict
+
+def avg_fwt_per_domain(data: dict, domain_order: list) -> list[float]:
+    vals = []
+
+    for k in domain_order:
+        if k in data:
+            vals.append(data[k])
+
+    cum_sum = list(accumulate(vals))
+
+    return [s/(i+1) for i, s in enumerate(cum_sum)]
 
 
 def calculate_cost():

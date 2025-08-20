@@ -159,6 +159,12 @@ def cluster_domains(base_path, distance_threshold=2.0):
 
     return dict(clusters), cluster_map
 
+def _sync(device):
+    if device.type == "cuda":
+        torch.cuda.synchronize()
+    elif device.type == "mps":
+        torch.mps.synchronize()
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Training script with W&B logging")
@@ -172,12 +178,12 @@ def parse_args():
                         help="Name of this run in W&B")
     
     # Model parameters
-    parser.add_argument("--learning_rate", type=float, default=0.01,
+    parser.add_argument("--learning_rate", type=float, default=0.05,
                         help="Learning rate for the optimizer")
     parser.add_argument("--architecture", type=str, default="LSTM_Attention", 
                         help="Model architecture to use (e.g., LSTM, BiLSTM, LSTM_Attention, BiLSTM_Attention, LSTM_Attention_adapter)")
     
-    parser.add_argument("--epochs", type=int, default=300, 
+    parser.add_argument("--epochs", type=int, default=10, 
                         help="Number of epochs to train the model")
     parser.add_argument("--algorithm", type=str, default="WCL",
                         help="Algorithm to use for continual learning (e.g., EWC, EWC_ZS, genreplay, SI, WCL)")
@@ -199,11 +205,11 @@ def parse_args():
                         help="Output size for the model (number of classes)")
     parser.add_argument("--num_layers", type=int, default=2,
                         help="Number of layers in the model")
-    parser.add_argument("--dropout", type=float, default=0.5,
+    parser.add_argument("--dropout", type=float, default=0.05,
                         help="Dropout rate for the model")
     parser.add_argument("--bidirectional", action='store_true',
                         help="Use bidirectional LSTM if set")
-    parser.add_argument("--patience", type=int, default=10,
+    parser.add_argument("--patience", type=int, default=3,
                         help="Patience for early stopping")
     parser.add_argument("--forgetting_threshold", type=float, default=0.01,
                         help="Threshold for detecting catastrophic forgetting")

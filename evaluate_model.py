@@ -17,4 +17,4 @@ def eval_model(model,test_domain_loader, train_domain, device):
     metrics = evaluate.evaluate_metrics(np.array(all_y_true), np.array(all_y_pred),
                         np.array(all_y_prob), train_domain, train_domain)
     
-    return metrics["f1"]
+    return metrics

@@ -214,3 +214,10 @@ results/
 models/
 temp/
 wandb/
+.DS_Store
+*.swp
+*.swo
+*.bak
+*.tmp
+*.log
+*.pid

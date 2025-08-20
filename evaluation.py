@@ -9,7 +9,7 @@ import torch
 
 
 # ===========================
-# Step 3: Updated Evaluation Metrics Function
+# Updated Evaluation Metrics Function
 # ===========================
 def evaluate_metrics(y_true, y_pred, y_prob, test_domain_name, training_domain_name):
     """
@@ -30,8 +30,8 @@ def evaluate_metrics(y_true, y_pred, y_prob, test_domain_name, training_domain_n
     precision = precision_score(y_true, y_pred, average='weighted')
     recall = recall_score(y_true, y_pred, average='weighted')
     f1 = f1_score(y_true, y_pred, average='weighted')
-    # roc_auc = roc_auc_score(y_true, y_prob)
-    # avg_precision = average_precision_score(y_true, y_prob)
+    roc_auc = roc_auc_score(y_true, y_prob)
+    avg_precision = average_precision_score(y_true, y_prob)
 
     # Compute confusion matrix and additional metrics
     cm = confusion_matrix(y_true, y_pred)
@@ -39,22 +39,6 @@ def evaluate_metrics(y_true, y_pred, y_prob, test_domain_name, training_domain_n
     tn, fp, fn, tp = cm.ravel()
     specificity = tn / (tn + fp) if (tn + fp) > 0 else 0.0
     balanced_acc = balanced_accuracy_score(y_true, y_pred)
-    
-    # ROC curve for plotting
-    """fpr, tpr, _ = roc_curve(y_true, y_prob)
-    roc_auc_val = auc(fpr, tpr)
-    plt.figure(figsize=(6,6))
-    plt.plot(fpr, tpr, color='b', label=f'ROC (AUC = {roc_auc_val:.4f})')
-    plt.plot([0,1], [0,1], color='gray', linestyle='--')
-    plt.xlim([0,1])
-    plt.ylim([0,1.05])
-    plt.xlabel('False Positive Rate')
-    plt.ylabel('True Positive Rate')
-    plt.title(f'Train: {training_domain_name} | Test: {test_domain_name}')
-    plt.legend(loc='lower right')
-    # Do not show the ROC plot interactively (commented out) if running headless.
-    plt.savefig(os.path.join(plot_folder, f"roc_{training_domain_name}_{test_domain_name}.png"))
-    plt.close()"""
     
     log_msg = (f"Train Domain: {training_domain_name} | Test Domain: {test_domain_name} | "
                f"Acc: {accuracy:.4f} | Prec: {precision:.4f} | Rec: {recall:.4f} | "
@@ -69,6 +53,8 @@ def evaluate_metrics(y_true, y_pred, y_prob, test_domain_name, training_domain_n
         "precision": precision,
         "recall": recall,
         "f1": f1,
+        "roc_auc": roc_auc,
+        "average_precision": avg_precision,
         "specificity": specificity,
         "balanced_accuracy": balanced_acc,
         "confusion_matrix": cm

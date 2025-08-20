@@ -1,5 +1,6 @@
 import torch
 import os
+import time
 import torch.nn as nn
 import torch.optim as optim
 import matplotlib.pyplot as plt
@@ -10,20 +11,18 @@ import logging
 import sys
 import warnings
 warnings.filterwarnings("ignore")
-from utils import save_results_as_json
+from utils import save_results_as_json, _sync
 import evaluate_model
 # import result_utils
 import evaluation as evaluate
 import result_utils as result_utils
-
+import wandb
 
 # ===========================
-# Step 4: Train with Early Stopping, Logging, Model Saving,
-#         Catastrophic Forgetting Detection, and Graph Plotting
+# Step: Train with Early Stopping, Logging, Model Saving, Catastrophic Forgetting Detection
 # ===========================
-def train_domain_incremental_model(args, train_domain_loader, test_domain_loader, device,
-                                   model, exp_no, num_epochs=500, learning_rate=0.01, patience=3, 
-                                   forgetting_threshold=0.01):
+def train_domain_incremental_model(args, run_wandb, train_domain_loader, test_domain_loader, device,
+                                   model, exp_no, num_epochs=500, learning_rate=0.01, patience=3):
     """
     For each training domain, trains the model on that domain (with early stopping using F1).
     After training on a domain, it evaluates on all test domains, logs the metrics, updates
@@ -33,43 +32,68 @@ def train_domain_incremental_model(args, train_domain_loader, test_domain_loader
     exp_no=0
 
     criterion = nn.CrossEntropyLoss()
-
     optimizer = optim.Adam(model.parameters(), lr=learning_rate)
 
 
-    # Maintain performance history per test domain (accuracy over training rounds)
     performance_stability = {test_domain: [] for test_domain in test_domain_loader.keys()}
-    
     performance_plasticity = {test_domain: [] for test_domain in test_domain_loader.keys()}
+    domain_training_cost = {test_domain: [] for test_domain in test_domain_loader.keys()}
 
     seen_domain = set()
     train_domain_order = list(train_domain_loader.keys())
-    # Iterate over each training domain
-    forget_counter_dictionary = {}
 
-    
+    # ---- W§B Enrich config for this run -----
+    run_wandb.config.update({
+        "batch_size": args.batch_size,
+        "Loss Function": "CrossEntropyLoss",
+        "optimizer": "Adam",
+        "weight_decay": 0.0,
+        "train_domains": train_domain_order
+    })
+
+    # --- W&B: watch gradients/params (adjust log_freq if heavy) ---
+    run_wandb.watch(model, criterion=criterion, log="all", log_freq=50)
+
     previous_domain = None
+    best_model_state = None  # Initialize best_model_state to avoid unbound errors
     for idx, train_domain in enumerate(train_domain_loader.keys()):
+        domain_epoch = 0
+        wandb.define_metric(f"{train_domain}/epoch")
+        wandb.define_metric(f"{train_domain}/*", step_metric=f"{train_domain}/epoch")
+        
+        
         logging.info(f"====== Evaluate Current domain {train_domain} on model built in previous domain : {previous_domain} ======")
         # Evaluate on same domain's test set
+        # Pre-train eval on this domain (plasticity)
         if idx != 0:
             all_y_true, all_y_pred, all_y_prob = [], [], []
-            model.load_state_dict(best_model_state)
+            if best_model_state is not None:
+                model.load_state_dict(best_model_state)
+            else:
+                logging.warning("best_model_state is uninitialized. Skipping model loading.")
             model.eval()
-            current_f1 = evaluate_model.eval_model(model, test_domain_loader, train_domain, device)
+            metrics = evaluate_model.eval_model(model, test_domain_loader, train_domain, device)
+            current_f1= metrics["f1"]
             performance_plasticity[train_domain].append(current_f1)
             logging.info(f" F1 : Previous domain : {previous_domain} : Current Domain {train_domain}: {current_f1:.4f}")
+            # --- W&B ---
+            run_wandb.log({f"{train_domain}/pretrain_f1": float(current_f1)})
 
         logging.info(f"====== Training on Domain: {train_domain} ======")
 
         best_f1 = -float("inf")
         epochs_no_improve = 0
-        best_model_state = None
+
+        _sync(device)
+        t0 = time.perf_counter()
 
         # Train for the current domain with early stopping (evaluation on same domain's test set)
         model.train()
         for epoch in range(num_epochs):
+            domain_epoch +=1
+            epoch_start = time.perf_counter()
             epoch_loss = 0.0
+            i = -1  # Initialize i to ensure it's defined even if the loop doesn't execute
             for i, (X_batch, y_batch) in enumerate(train_domain_loader[train_domain][0]):
                 X_batch, y_batch = X_batch.to(device), y_batch.to(device)
         
@@ -82,15 +106,24 @@ def train_domain_incremental_model(args, train_domain_loader, test_domain_loader
                 optimizer.step()
                 epoch_loss += loss.item()
             
-            epoch_loss /= (i+1)
+            epoch_loss /= (i+1) if i >= 0 else 1  # Avoid division by zero if the loop doesn't execute
             
-            print(f"Epoch [{epoch+1}/{num_epochs}] Train Loss: {epoch_loss:.4f}")    
-        
-            
-            # Evaluate on same domain's test set
+            _sync(device)
+            epoch_time = time.perf_counter() - epoch_start
+            logging.info(f"[{train_domain}] | Epoch [{epoch+1}/{num_epochs}] | Train Loss: {epoch_loss:.4f} | Time: {epoch_time:.2f}s")    
 
+            # --- W&B: per-epoch train metrics ---
+            run_wandb.log({
+                f"{train_domain}/epoch": domain_epoch,
+                f"{train_domain}/train_loss": float(epoch_loss),
+                f"{train_domain}/epoch_time_s": float(epoch_time),      
+            })
+
+            # Evaluate on same domain's test set
+            
             all_y_true, all_y_pred, all_y_prob = [], [], []
             model.eval()
+            test_loss = 0.0
             with torch.no_grad():
                 # for id_test_domain in range(len(test_domain_loader[train_domain])):
                 for X_batch, y_batch in test_domain_loader[train_domain][0]:
@@ -101,16 +134,26 @@ def train_domain_incremental_model(args, train_domain_loader, test_domain_loader
                     all_y_true.extend(y_batch.cpu().numpy())
                     all_y_pred.extend(predicted.cpu().numpy())
                     all_y_prob.extend(torch.nn.functional.softmax(outputs, dim=1)[:, 1].cpu().numpy())
-
+                    test_loss += loss.item()
+            test_loss /= max(1, len(test_domain_loader[train_domain][0]))
               
-                metrics = evaluate.evaluate_metrics(np.array(all_y_true), np.array(all_y_pred), 
+            metrics = evaluate.evaluate_metrics(np.array(all_y_true), np.array(all_y_pred), 
                                 np.array(all_y_prob), train_domain, train_domain)
-                current_f1 = metrics["f1"]
+            current_f1 = metrics["f1"]
             
-            print(f" Epoch: {epoch+1} | Test Loss: {loss.item()} F1: {current_f1:.4f}")
-        
-            logging.info(f"Early Stopping Check | Domain: {train_domain} | Epoch: {epoch+1} | F1: {current_f1:.4f}")
+            logging.info(f"[{train_domain}] | Epoch: {epoch+1}/{num_epochs} |  Test Loss: {test_loss}  | F1: {current_f1:.4f}")
             
+             # --- W&B: per-epoch val metrics (log numeric items) ---
+            # after you compute validation metrics
+            run_wandb.log({
+                f"{train_domain}/epoch": domain_epoch,
+                f"{train_domain}/val_loss": float(test_loss),
+                f"{train_domain}/val_f1": float(current_f1),
+                # plus any others from your metrics dict...
+            })
+
+
+
             if current_f1 > best_f1:
                 best_f1 = current_f1
                 best_model_state = deepcopy(model.state_dict())
@@ -124,7 +167,10 @@ def train_domain_incremental_model(args, train_domain_loader, test_domain_loader
                 logging.info(f"Early stopping triggered for {train_domain} at epoch {epoch+1}")
                 # print(f"Early stopping triggered for {train_domain} at epoch {epoch+1}")
                 break
-
+        _sync(device)
+        domain_training_time = time.perf_counter() - t0
+        logging.info(f"Training time for {train_domain}: {domain_training_time:.2f} seconds")
+        domain_training_cost[train_domain].append(domain_training_time)
         # Restore best state and save model checkpoint for current domain
         if best_model_state is not None:
 
@@ -142,11 +188,15 @@ def train_domain_incremental_model(args, train_domain_loader, test_domain_loader
         # Evaluate on the best model on the currently trained domain 
         model.load_state_dict(best_model_state)
         model.eval()
-        current_f1 = evaluate_model.eval_model(model, test_domain_loader, train_domain, device)
+        best_metrices = evaluate_model.eval_model(model, test_domain_loader, train_domain, device)
+        current_f1 = best_metrices["f1"]
         performance_plasticity[train_domain].append(current_f1)
         performance_stability[train_domain].append(current_f1)
         logging.info(f" F1 : Current Domain {train_domain}: {current_f1:.4f}")
         logging.info(f"performance_plasticity: {performance_plasticity}")
+        logging.info(f"metrics: {best_metrices}")
+
+
 
         # Generalization to all previous domains:
         logging.info(f"====== Evaluating on all previous domains after training on {train_domain} ======")
@@ -156,26 +206,29 @@ def train_domain_incremental_model(args, train_domain_loader, test_domain_loader
             if test_domain == train_domain:
                 continue
             model.eval()
-            current_f1 = evaluate_model.eval_model(model, test_domain_loader, test_domain, device)
+            metrics = evaluate_model.eval_model(model, test_domain_loader, test_domain, device)
+            current_f1 = metrics["f1"]
             performance_stability[test_domain].append(current_f1)
             
-            logging.info(f"performance_stability{test_domain}: {performance_stability[test_domain]}")
+            logging.info(f"performance_stability | {test_domain}: {performance_stability[test_domain]}")
 
         print(f"====== Finished Training on Domain: {train_domain} ======")
 
     # Final Metrics: BWT / FWT
     logging.info(f"====== Final Metrics after training on all domains ======")
-    bwt_values, bwt_dict = result_utils.compute_bwt(performance_stability)
-    fwt_values, fwt_dict = result_utils.compute_fwt(performance_plasticity)
-    logging.info(f"BWT: {bwt_values:.4f}")
-    logging.info(f"BWT per domain: {bwt_dict}")
+    bwt_values, bwt_dict, bwt_values_dict = result_utils.compute_BWT(performance_stability, train_domain_order)
+    fwt_values, fwt_dict = result_utils.compute_FWT(performance_plasticity, train_domain_order)
+    logging.info(f"\n BWT: {bwt_values}")
+    logging.info(f"\n BWT of all previous domain corresponding to the training domain: {bwt_values_dict}")
+    logging.info(f"\n BWT per domain: {bwt_dict}")
 
-    logging.info(f"FWT: {fwt_values:.4f}")
+    logging.info(f"FWT: {fwt_values}")
     logging.info(f"FWT per domain: {fwt_dict}")
 
 
 
     results_to_save = {
+        "exp_no": exp_no,
         "performance_stability": performance_stability,
         "performance_m": performance_plasticity,
         "BWT_values": bwt_values,
@@ -183,12 +236,26 @@ def train_domain_incremental_model(args, train_domain_loader, test_domain_loader
         "FWT_values": fwt_values,
         "FWT_dict": fwt_dict,
         "train_domain_order": train_domain_order,
+        "domain_training_cost": domain_training_cost,
     }
 
     save_results_as_json(results_to_save, filename=f"{exp_no}_experiment_results_{args.architecture}_{args.algorithm}_{args.scenario}.json")
     logging.info("Final training complete. Results saved.")
 
+    run_wandb.summary["BWT/list"] =  bwt_values
+    run_wandb.summary["FWT/list"] =  fwt_values
 
+
+    tbl1 = wandb.Table(columns=["domain", "FWT"])
+    for dom in train_domain_order:
+        tbl1.add_data(dom,  fwt_dict.get(dom, None))
+    run_wandb.log({"fwt_metrics": tbl1})
+    
+
+    tbl2 = wandb.Table(columns=["domain", "BWT"])
+    for dom in train_domain_order:
+        tbl2.add_data(dom,  bwt_values_dict.get(dom, None))
+    run_wandb.log({"bwt_metrics": tbl2})
     
     ####
         
@@ -246,30 +313,4 @@ def train_domain_incremental_model(args, train_domain_loader, test_domain_loader
         forget_ratio = forget_counter / (forget_counter + not_forget_counter) * 100
         logging.info(f"F1 Score dropped in {forget_counter}/{forget_counter + not_forget_counter} domains ({forget_ratio:.2f}%)")
         forget_counter_dictionary[train_domain] = forget_ratio"""
-    
-
-    """"# Final Metrics: BWT / FWT
-    logging.info(f"====== Final Metrics after training on all domains ======")
-    T = len(train_domain_order)
-    test_domains = list(performance_matrix.keys())
-    perf_array = np.zeros((T, T))
-    for i, test_domain in enumerate(test_domains):
-        perf_array[:, i] = performance_matrix[test_domain]
-    logging.info(f"Perdoemance matrix: {perf_array}")
-
-    bwt_values = [perf_array[-1, i] - perf_array[i, i] for i in range(T - 1)]
-    BWT = np.mean(bwt_values)
-
-    fwt_values = [perf_array[i - 1, i] for i in range(1, T)]
-    FWT = np.mean(fwt_values)
-
-    
-    
-    logging.info(f"BWT: {BWT:.4f}")
-    logging.info(f"FWT: {FWT:.4f}")
-    logging.info(f"BWT per task: {bwt_values}")
-
-   
-    
-
-"""
+  
