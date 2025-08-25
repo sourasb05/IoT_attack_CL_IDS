@@ -55,17 +55,17 @@ def main():
     # ----------------------------
     if torch.backends.mps.is_available() and torch.backends.mps.is_built():
         device = torch.device("mps")
-        print("Using Apple MPS")
+        # print("Using Apple MPS")
     elif torch.cuda.is_available():
         device = torch.device("cuda")
-        print("Using GPU")
+        # print("Using GPU")
     else:
         device = torch.device("cpu")
-        print("Using CPU")
+       #  print("Using CPU")
     
     current_directory = os.getcwd()
     
-    print(current_directory)
+    # print(current_directory)
 
     algorithm = args.algorithm  # "SI/EWC/WCL/Generative_Replay/" 
     scenario = args.scenario    # (randoem/b2w/w2b/clustered/toggle)
@@ -96,7 +96,7 @@ def main():
     
     logging.info(f"Logs will be saved to: {log_filename}")
     
-    domains_path = current_directory + '/data/cross_val_scenario'
+    domains_path = current_directory + '/data/attack_data'
 
     domains = utils.create_domains(domains_path)
 
@@ -105,12 +105,9 @@ def main():
     full_domains_loader = {}
 
     for key, files in domains.items():
-
-        # Construct the expected file names for this experiment
         
-        train_file = f"run_{exp_no:02d}_train.csv"
-        val_file   = f"run_{exp_no:02d}_val.csv"
-
+        # Construct the expected file names for this experiment
+       
         # print(f"train_file: {train_file} | val_file: {val_file}")
         
         # print(f"Processing domain: {key} with {len(files)} datasets : {files}")
@@ -118,30 +115,29 @@ def main():
         # if train_file in files and val_file in files:
         #    print(f"Experiment {exp_no} | Domain: {key} | Train file: {train_file} | Val file:   {val_file}")
 
-        train_domains_loader[key] = utils.load_data(domains_path, key, train_file, window_size=args.window_size, step_size=args.step_size, batch_size=args.batch_size, train=True)
-        test_domains_loader[key] = utils.load_data(domains_path, key, val_file, window_size=args.window_size, step_size=args.step_size, train=False)
-        print(train_domains_loader[key])
-        print(test_domains_loader[key])
-        sys.exit(0)
+        train_domains_loader[key], test_domains_loader[key] = utils.load_data(domains_path, key, files, window_size=args.window_size, step_size=args.step_size, batch_size=args.batch_size)
+        # print(train_domains_loader[key])
+        # print(test_domains_loader[key])
+        
         # print(f"Train loader for domain {key} has {len(train_domains_loader[key])} batches")
         # print(f"Test loader for domain {key} has {len(test_domains_loader[key])} batches")
         
         # logging.info(f"Exp {exp_no} | Domain: {key} | Train size: {len(train_domains_loader[key])} | Test size: {len(test_domains_loader[key])}")
     
-    # input_size = 13
-    # hidden_size = 128
-    # output_size = 2
-    # num_layers = 2
-    # dropout = 0.5
+    input_size = 140
+    hidden_size = 10
+    output_size = 2
+    num_layers = 3
+    dropout = 0.5
     # bidirectional = args.bidirectional
     # hidden_size = 128
     # output_size = 2
     # model = models.LSTMModel(input_size, hidden_size, output_size) #.to(device)
     # model = models.LSTMModel(input_size=input_size, hidden_size=hidden_size, output_size=output_size, num_layers=2, dropout=0.5, bidirectional=True)
     if architecture == "LSTM":
-        model = models.LSTMModel(input_size=args.input_size, hidden_size=args.hidden_size, output_size=args.output_size, num_layers=args.num_layers, dropout=args.dropout, bidirectional=args.bidirectional).to(device)
+        model = models.LSTMClassifier(input_dim=args.input_size, hidden_dim=args.hidden_size, output_dim=args.output_size, num_layers=args.num_layers, fc_hidden_dim=10).to(device)
     elif architecture == "BiLSTM":
-        model = models.BiLSTMModel(input_size=args.input_size, hidden_size=args.hidden_size, output_size=args.output_size, num_layers=args.num_layers, dropout=args.dropout).to(device)
+        model = models.LSTMModel(input_size=args.input_size, hidden_size=args.hidden_size, output_size=args.output_size, num_layers=args.num_layers, dropout=args.dropout, bidirectional=args.bidirectional).to(device)
     elif architecture == "LSTM_Attention":
         model = models.LSTMModelWithAttention(input_size=args.input_size, hidden_size=args.hidden_size, output_size=args.output_size, num_layers=args.num_layers, dropout=args.dropout, bidirectional=args.bidirectional).to(device)
     elif architecture == "BiLSTM_Attention":

@@ -41,6 +41,7 @@ def train_domain_incremental_model(args, run_wandb, train_domain_loader, test_do
 
     seen_domain = set()
     train_domain_order = list(train_domain_loader.keys())
+    domain_to_id = {name: i for i, name in enumerate(train_domain_loader.keys())}
 
     # ---- W§B Enrich config for this run -----
     run_wandb.config.update({
@@ -57,6 +58,7 @@ def train_domain_incremental_model(args, run_wandb, train_domain_loader, test_do
     previous_domain = None
     best_model_state = None  # Initialize best_model_state to avoid unbound errors
     for idx, train_domain in enumerate(train_domain_loader.keys()):
+        domain_id = domain_to_id[train_domain]
         domain_epoch = 0
         wandb.define_metric(f"{train_domain}/epoch")
         wandb.define_metric(f"{train_domain}/*", step_metric=f"{train_domain}/epoch")
@@ -72,7 +74,10 @@ def train_domain_incremental_model(args, run_wandb, train_domain_loader, test_do
             else:
                 logging.warning("best_model_state is uninitialized. Skipping model loading.")
             model.eval()
-            metrics = evaluate_model.eval_model(model, test_domain_loader, train_domain, device)
+            if args.architecture == "LSTM_Attention_adapter":
+                metrics = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=domain_id)
+            else:
+                metrics = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=None)
             current_f1= metrics["f1"]
             performance_plasticity[train_domain].append(current_f1)
             logging.info(f" F1 : Previous domain : {previous_domain} : Current Domain {train_domain}: {current_f1:.4f}")
@@ -94,11 +99,14 @@ def train_domain_incremental_model(args, run_wandb, train_domain_loader, test_do
             epoch_start = time.perf_counter()
             epoch_loss = 0.0
             i = -1  # Initialize i to ensure it's defined even if the loop doesn't execute
-            for i, (X_batch, y_batch) in enumerate(train_domain_loader[train_domain][0]):
+            for i, (X_batch, y_batch) in enumerate(train_domain_loader[train_domain]):
                 X_batch, y_batch = X_batch.to(device), y_batch.to(device)
         
                 optimizer.zero_grad()
-                outputs, _ = model(X_batch)
+                if args.architecture == "LSTM_Attention_adapter":
+                    outputs, _ = model(X_batch, domain_id=domain_id)  # Pass domain_id to the model
+                else:
+                    outputs, _ = model(X_batch)  # Pass domain_id to the model
                 loss = criterion(outputs, y_batch.long())
                 # Clip gradients here
                 torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -126,22 +134,26 @@ def train_domain_incremental_model(args, run_wandb, train_domain_loader, test_do
             test_loss = 0.0
             with torch.no_grad():
                 # for id_test_domain in range(len(test_domain_loader[train_domain])):
-                for X_batch, y_batch in test_domain_loader[train_domain][0]:
+                for X_batch, y_batch in test_domain_loader[train_domain]:
                     X_batch, y_batch = X_batch.to(device), y_batch.to(device)
-                    outputs, _ = model(X_batch)
+                    if args.architecture == "LSTM_Attention_adapter":
+                        outputs, _ = model(X_batch, domain_id=domain_id)  # Pass domain_id to the model
+                    else:
+                        outputs, _ = model(X_batch)
                     loss = criterion(outputs, y_batch.long())
                     _, predicted = torch.max(outputs.data, 1)
                     all_y_true.extend(y_batch.cpu().numpy())
                     all_y_pred.extend(predicted.cpu().numpy())
                     all_y_prob.extend(torch.nn.functional.softmax(outputs, dim=1)[:, 1].cpu().numpy())
                     test_loss += loss.item()
-            test_loss /= max(1, len(test_domain_loader[train_domain][0]))
+            test_loss /= max(1, len(test_domain_loader[train_domain]))
               
             metrics = evaluate.evaluate_metrics(np.array(all_y_true), np.array(all_y_pred), 
                                 np.array(all_y_prob), train_domain, train_domain)
             current_f1 = metrics["f1"]
+            current_auc_roc = metrics["roc_auc"]
             
-            logging.info(f"[{train_domain}] | Epoch: {epoch+1}/{num_epochs} |  Test Loss: {test_loss}  | F1: {current_f1:.4f}")
+            logging.info(f"[{train_domain}] | Epoch: {epoch+1}/{num_epochs} |  Test Loss: {test_loss}  | F1: {current_f1:.4f} | AUC-ROC: {current_auc_roc:.4f}")
             
              # --- W&B: per-epoch val metrics (log numeric items) ---
             # after you compute validation metrics
@@ -188,7 +200,11 @@ def train_domain_incremental_model(args, run_wandb, train_domain_loader, test_do
         # Evaluate on the best model on the currently trained domain 
         model.load_state_dict(best_model_state)
         model.eval()
-        best_metrices = evaluate_model.eval_model(model, test_domain_loader, train_domain, device)
+        if args.architecture == "LSTM_Attention_adapter":
+            best_metrices = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=domain_id)
+        else:
+            best_metrices = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=None)
+        
         current_f1 = best_metrices["f1"]
         performance_plasticity[train_domain].append(current_f1)
         performance_stability[train_domain].append(current_f1)
@@ -206,7 +222,10 @@ def train_domain_incremental_model(args, run_wandb, train_domain_loader, test_do
             if test_domain == train_domain:
                 continue
             model.eval()
-            metrics = evaluate_model.eval_model(model, test_domain_loader, test_domain, device)
+            if args.architecture == "LSTM_Attention_adapter":
+                metrics = evaluate_model.eval_model(args, model, test_domain_loader, test_domain, device, domain_id=domain_to_id[test_domain])
+            else:
+                metrics = evaluate_model.eval_model(args, model, test_domain_loader, test_domain, device, domain_id=None)
             current_f1 = metrics["f1"]
             performance_stability[test_domain].append(current_f1)
             

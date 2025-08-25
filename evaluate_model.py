@@ -3,12 +3,15 @@ import numpy as np
 import logging
 import evaluation as evaluate
 
-def eval_model(model,test_domain_loader, train_domain, device):
+def eval_model(args, model,test_domain_loader, train_domain, device, domain_id=None):
     all_y_true, all_y_pred, all_y_prob = [], [], []
     with torch.no_grad():
-        for X_batch, y_batch in test_domain_loader[train_domain][0]:
+        for X_batch, y_batch in test_domain_loader[train_domain]:
             X_batch, y_batch = X_batch.to(device), y_batch.to(device)
-            outputs, _ = model(X_batch)
+            if domain_id is not None:
+                outputs, _ = model(X_batch, domain_id=domain_id)  # Pass domain_id to the model
+            else:
+                outputs, _ = model(X_batch)  # Pass domain_id to the model
             _, predicted = torch.max(outputs.data, 1)
             all_y_true.extend(y_batch.cpu().numpy())
             all_y_pred.extend(predicted.cpu().numpy())

@@ -4,24 +4,30 @@ import torch
 # ===========================
 # Define the LSTM Model
 # ===========================
-"""class LSTMModel(nn.Module):
-    def __init__(self, input_size, hidden_size, output_size, num_layers=1):
-        super(LSTMModel, self).__init__()
-        self.hidden_size = hidden_size
-        self.num_layers = num_layers
-        
-        self.lstm = nn.LSTM(input_size, hidden_size, num_layers, batch_first=True)
-        self.fc = nn.Linear(hidden_size, output_size)
-    
-    def forward(self, x):
-        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
-        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_size).to(x.device)
-        out, _ = self.lstm(x, (h0, c0))
-        out = out[:, -1, :]  # Use the last time step's output
-        out = self.fc(out)
-        return out
 
-"""
+class LSTMClassifier(nn.Module):
+    def __init__(self, input_dim, hidden_dim, output_dim, num_layers, fc_hidden_dim):
+        super(LSTMClassifier, self).__init__()
+        self.hidden_dim = hidden_dim
+        self.num_layers = num_layers
+        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True)
+        self.fc1 = nn.Linear(hidden_dim, fc_hidden_dim)
+        self.fc2 = nn.Linear(fc_hidden_dim, output_dim)
+        self.loss_train = []
+        self.loss_test = []
+
+
+    def forward(self, x):
+        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).to(x.device)
+        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).to(x.device)
+        
+        out, _ = self.lstm(x, (h0, c0))
+        out = self.fc1(out[:, -1, :])
+        out = torch.relu(out)  # Activation function for the hidden layer
+        out = self.fc2(out)
+        out = torch.softmax(out,dim = 1)
+
+        return out
 
 class LSTMModel(nn.Module):
     def __init__(self, input_size, hidden_size, output_size, num_layers=1, dropout=0.0, bidirectional=False):
@@ -79,7 +85,7 @@ class LSTMModel(nn.Module):
         
         # Apply fully connected layer to get final output
         out = self.fc(out)
-        return out
+        return out, _
     
 
 
