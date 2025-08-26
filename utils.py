@@ -161,8 +161,8 @@ def load_data(domain_path, key, domain_dataset, window_size=10, step_size=3, bat
     train_dataset = TensorDataset(X_train, y_train)
     test_dataset  = TensorDataset(X_test,  y_test)
 
-    train_loader = DataLoader(train_dataset, batch_size, shuffle=True)
-    test_loader  = DataLoader(test_dataset,  batch_size, shuffle=False)
+    train_loader = DataLoader(train_dataset, batch_size, shuffle=True, num_workers=4)
+    test_loader  = DataLoader(test_dataset,  batch_size, shuffle=False, num_workers=4)
 
 
     # print("X_train:", X_train.shape, "y_train:", y_train.shape)
@@ -294,7 +294,7 @@ def parse_args():
     parser.add_argument("--architecture", type=str, default="LSTM_Attention_adapter", 
                         help="Model architecture to use (e.g., LSTM, BiLSTM, LSTM_Attention, BiLSTM_Attention, LSTM_Attention_adapter)")
     
-    parser.add_argument("--epochs", type=int, default=20, 
+    parser.add_argument("--epochs", type=int, default=3, 
                         help="Number of epochs to train the model")
     parser.add_argument("--algorithm", type=str, default="WCL",
                         help="Algorithm to use for continual learning (e.g., EWC, EWC_ZS, genreplay, SI, WCL)")
@@ -320,7 +320,7 @@ def parse_args():
                         help="Dropout rate for the model")
     parser.add_argument("--bidirectional", action='store_true',
                         help="Use bidirectional LSTM if set")
-    parser.add_argument("--patience", type=int, default=15,
+    parser.add_argument("--patience", type=int, default=2,
                         help="Patience for early stopping")
     parser.add_argument("--forgetting_threshold", type=float, default=0.01,
                         help="Threshold for detecting catastrophic forgetting")

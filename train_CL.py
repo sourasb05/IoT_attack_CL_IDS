@@ -3,6 +3,8 @@ import os
 import time
 import torch.nn as nn
 import torch.optim as optim
+from torch.nn.utils import clip_grad_norm_
+
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -93,8 +95,9 @@ def train_domain_incremental_model(args, run_wandb, train_domain_loader, test_do
         t0 = time.perf_counter()
 
         # Train for the current domain with early stopping (evaluation on same domain's test set)
-        model.train()
+        
         for epoch in range(num_epochs):
+            model.train()
             domain_epoch +=1
             epoch_start = time.perf_counter()
             epoch_loss = 0.0
@@ -109,8 +112,8 @@ def train_domain_incremental_model(args, run_wandb, train_domain_loader, test_do
                     outputs, _ = model(X_batch)  # Pass domain_id to the model
                 loss = criterion(outputs, y_batch.long())
                 # Clip gradients here
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
                 loss.backward()
+                clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
                 epoch_loss += loss.item()
             
@@ -276,60 +279,4 @@ def train_domain_incremental_model(args, run_wandb, train_domain_loader, test_do
         tbl2.add_data(dom,  bwt_values_dict.get(dom, None))
     run_wandb.log({"bwt_metrics": tbl2})
     
-    ####
-        
-        # Evaluate on every test domain after training on current domain and collect metrics
     
-    """overall_metrics = {}
-        logging.info(f"--- Overall Evaluations after training on {train_domain} ---")
-        # print(f"\n--- Overall Evaluations after training on {train_domain} ---\n")
-        for test_domain in test_domain_loader.keys():
-            #print(test_domain)
-            all_y_true, all_y_pred, all_y_prob = [], [], []
-            model.eval()
-            with torch.no_grad():
-                for X_batch, y_batch in test_domain_loader[test_domain][0]:
-                    X_batch, y_batch = X_batch.to(device), y_batch.to(device)
-                    outputs, _ = model(X_batch)
-                    _, predicted = torch.max(outputs.data, 1)
-                    all_y_true.extend(y_batch.cpu().numpy())
-                    all_y_pred.extend(predicted.cpu().numpy())
-                    all_y_prob.extend(torch.nn.functional.softmax(outputs, dim=1)[:, 1].cpu().numpy())
-
-              
-            metrics = evaluate.evaluate_metrics(np.array(all_y_true), np.array(all_y_pred),
-                                    np.array(all_y_prob), test_domain, train_domain)
-            overall_metrics[test_domain] = metrics
-            
-            # Update performance history (accuracy for forgetting detection)
-            performance_history[test_domain].append(metrics["f1"])
-            performance_matrix[test_domain].append(metrics["f1"])
-        logging.info(overall_metrics)"""
-            
-        
-        
-        # After evaluations, create bar charts comparing precision and recall for all test domains.
-        # test_domains = list(overall_metrics.keys())
-        # precisions = [overall_metrics[d]["precision"] for d in test_domains]
-        # recalls = [overall_metrics[d]["recall"] for d in test_domains]
-        
-        
-        # Generalization analysis
-        
-    """print(f"\n--- Improvement in F1 Score after training on {train_domain} ---\n")
-        forget_counter = 0
-        not_forget_counter = 0
-        for test_domain, history in performance_history.items():
-            current_F1 = history[-1]
-            best_so_far = max(history)
-            forgetting = best_so_far - current_F1
-            if forgetting > forgetting_threshold:
-                forget_counter += 1
-                logging.info(f"{test_domain}: Forgetting={forgetting:.4f} --> Significant Drop in F1 Score Detected!")
-            else:
-                not_forget_counter += 1
-                logging.info(f"{test_domain}: Forgetting={forgetting:.4f} --> No Significant Drop in F1 Score Detected.")
-        forget_ratio = forget_counter / (forget_counter + not_forget_counter) * 100
-        logging.info(f"F1 Score dropped in {forget_counter}/{forget_counter + not_forget_counter} domains ({forget_ratio:.2f}%)")
-        forget_counter_dictionary[train_domain] = forget_ratio"""
-  

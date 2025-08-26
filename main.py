@@ -55,13 +55,13 @@ def main():
     # ----------------------------
     if torch.backends.mps.is_available() and torch.backends.mps.is_built():
         device = torch.device("mps")
-        # print("Using Apple MPS")
+        print("Using Apple MPS")
     elif torch.cuda.is_available():
         device = torch.device("cuda")
-        # print("Using GPU")
+        print("Using GPU")
     else:
         device = torch.device("cpu")
-       #  print("Using CPU")
+        print("Using CPU")
     
     current_directory = os.getcwd()
     

@@ -13,16 +13,9 @@ def train_domain_incremental_model_gen(scenario, device, train_domain_loader, te
                                    model, exp_no, num_epochs=20, learning_rate=0.01, patience=3, 
                                    forgetting_threshold=0.01, gpu=0):
     
-    """if torch.backends.mps.is_available() and torch.backends.mps.is_built():
-        device = torch.device("mps")
-        print("Using Apple MPS")
-    else:
-        device = torch.device("cpu")
-        print("Using CPU")"""
-    # device = torch.device("cpu")
+   
     criterion = nn.CrossEntropyLoss()
-    # optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-
+    
     performance_history = {test_domain: [] for test_domain in test_domain_loader.keys()}
     performance_matrix = {test_domain: [] for test_domain in test_domain_loader.keys()}
     forget_counter_dictionary = {}

@@ -1,18 +1,22 @@
-name: iot_attack_cl_ids
+# environment.yml  (GPU, NumPy 2)
+prefix: /proj/sourasb-220503/conda/envs/iot_attack_cl_ids
 channels:
-  - defaults
+  - pytorch
+  - nvidia
   - conda-forge
+  - defaults
 dependencies:
-  - python>=3.9,<3.11
+  - python=3.10
+  - numpy>=2.0,<3
+  - pandas>=2.2,<3
+  - scipy>=1.11,<2
+  - scikit-learn>=1.3,<2
+  - tqdm
+  - matplotlib>=3.8,<4
+  - seaborn>=0.13,<0.14
+  - pytorch>=2.3.1,<2.6
+  - pytorch-cuda=12.1        # <-- change to 11.8 if your cluster uses CUDA 11.8
   - pip
   - pip:
-      - torch>=1.13.1,<2.2
-      - numpy>=1.23
-      - pandas>=1.5
-      - scikit-learn>=1.0
-      - tqdm>=4.64
-      - wandb>=0.15
-      - matplotlib>=3.5
-      - seaborn>=0.12
-      - scipy>=1.8
-      - typing-extensions>=4.0
+      - typing-extensions>=4.8
+      - wandb>=0.16
