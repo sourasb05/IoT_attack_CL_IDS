@@ -1,10 +1,10 @@
 import torch
 import os
 import time
+import random
 import torch.nn as nn
 import torch.optim as optim
 from torch.nn.utils import clip_grad_norm_
-
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -19,11 +19,12 @@ import evaluate_model
 import evaluation as evaluate
 import result_utils as result_utils
 import wandb
+from tqdm import tqdm
 
 # ===========================
 # Step: Train with Early Stopping, Logging, Model Saving, Catastrophic Forgetting Detection
 # ===========================
-def tdim_random(args, run_wandb, train_domain_loader, test_domain_loader, device,
+def tdim_b2w(args, run_wandb, train_domain_loader, test_domain_loader, device,
                                    model, exp_no, num_epochs=500, learning_rate=0.01, patience=3):
     """
     For each training domain, trains the model on that domain (with early stopping using F1).
@@ -39,9 +40,10 @@ def tdim_random(args, run_wandb, train_domain_loader, test_domain_loader, device
     performance_stability = {test_domain: [] for test_domain in test_domain_loader.keys()}
     performance_plasticity = {test_domain: [] for test_domain in test_domain_loader.keys()}
     domain_training_cost = {test_domain: [] for test_domain in test_domain_loader.keys()}
-
-    seen_domain = set()
+    
     train_domain_order = list(train_domain_loader.keys())
+    seen_domain = set()
+    unseen_domain = set(train_domain_order)
     domain_to_id = {name: i for i, name in enumerate(train_domain_loader.keys())}
 
     # ---- W&B Enrich config for this run -----
@@ -58,12 +60,17 @@ def tdim_random(args, run_wandb, train_domain_loader, test_domain_loader, device
 
     previous_domain = None
     best_model_state = None  # Initialize best_model_state to avoid unbound errors
-    for idx, train_domain in enumerate(train_domain_loader.keys()):
+    idx=0
+    train_domain = None
+    while idx <= len(train_domain_loader.keys()):
+        if train_domain == None:
+            train_domain = random.choice(list(train_domain_loader.keys()))
+        seen_domain.add(train_domain)
+        unseen_domain.remove(train_domain)
         domain_id = domain_to_id[train_domain]
         domain_epoch = 0
         wandb.define_metric(f"{train_domain}/epoch")
         wandb.define_metric(f"{train_domain}/*", step_metric=f"{train_domain}/epoch")
-        
         
         logging.info(f"====== Evaluate Current domain {train_domain} on model built in previous domain : {previous_domain} ======")
         # Evaluate on same domain's test set
@@ -218,7 +225,7 @@ def tdim_random(args, run_wandb, train_domain_loader, test_domain_loader, device
 
         # Generalization to all previous domains:
         logging.info(f"====== Evaluating on all previous domains after training on {train_domain} ======")
-        seen_domain.add(train_domain)
+
         for test_domain in seen_domain:
             print(test_domain)
             if test_domain == train_domain:
@@ -233,6 +240,23 @@ def tdim_random(args, run_wandb, train_domain_loader, test_domain_loader, device
             
             logging.info(f"performance_stability | {test_domain}: {performance_stability[test_domain]}")
 
+        # select next domain based on the generalization:
+        logging.info(f"====== Evaluating on all unseen domains after training on {train_domain} ======")
+        train_w2b = {domain: 0.0 for domain in unseen_domain}
+        for test_domain in tqdm(unseen_domain, desc="Finding next worst domain"):
+            model.eval()
+            if args.architecture == "LSTM_Attention_adapter":
+                metrics = evaluate_model.eval_model(args, model, test_domain_loader, test_domain, device, domain_id=domain_to_id[test_domain])
+            else:
+                metrics = evaluate_model.eval_model(args, model, test_domain_loader, test_domain, device, domain_id=None)
+            current_f1 = metrics["f1"]
+            train_w2b[test_domain] = current_f1
+        if train_w2b:
+            train_domain = max(train_w2b, key=train_w2b.get)
+            print(f"next train_domain : {train_domain}")
+        else:
+            continue
+        
         print(f"====== Finished Training on Domain: {train_domain} ======")
 
     # Final Metrics: BWT / FWT
@@ -245,7 +269,6 @@ def tdim_random(args, run_wandb, train_domain_loader, test_domain_loader, device
 
     logging.info(f"FWT: {fwt_values}")
     logging.info(f"FWT per domain: {fwt_dict}")
-
 
 
     results_to_save = {

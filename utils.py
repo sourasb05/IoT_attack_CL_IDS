@@ -291,14 +291,14 @@ def parse_args():
     # Model parameters
     parser.add_argument("--learning_rate", type=float, default=0.001,
                         help="Learning rate for the optimizer")
-    parser.add_argument("--architecture", type=str, default="LSTM_Attention_adapter", 
+    parser.add_argument("--architecture", type=str, default="LSTM_Attention", 
                         help="Model architecture to use (e.g., LSTM, BiLSTM, LSTM_Attention, BiLSTM_Attention, LSTM_Attention_adapter)")
     
     parser.add_argument("--epochs", type=int, default=3, 
                         help="Number of epochs to train the model")
     parser.add_argument("--algorithm", type=str, default="WCL",
                         help="Algorithm to use for continual learning (e.g., EWC, EWC_ZS, genreplay, SI, WCL)")
-    parser.add_argument("--scenario", type=str, default="random",
+    parser.add_argument("--scenario", type=str, default="w2b",
                         help="Scenario for training (e.g., random, b2w, w2b, clustered, toggle)")
     parser.add_argument("--exp_no", type=int, default=1,
                         help="Experiment number for logging")

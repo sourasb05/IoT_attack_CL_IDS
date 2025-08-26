@@ -1,7 +1,8 @@
 import utils as utils
 import models as models
 import train_CL as train_WCL
-import train_WCL_gen as train_WCL_gen
+import train_WCL_w2b as train_WCL_w2b
+import train_WCL_b2w as train_WCL_b2w
 import train_CL_SI as train_si
 import train_CL_EWC as train_ewc
 import train_CL_EWC_ZS as train_ewc_zs
@@ -152,13 +153,16 @@ def main():
     
     if algorithm == "WCL":  
         if scenario == "random":
-
-            train_WCL.train_domain_incremental_model(args, run_wandb, train_domains_loader, test_domains_loader, device,
-                                        model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience)
-                                        
-        else:
-            train_WCL_gen.train_domain_incremental_model_gen(scenario, device, train_domains_loader, test_domains_loader, full_domains_loader, 
-                                        model, exp_no, num_epochs=50, learning_rate=0.001, patience=10,forgetting_threshold=0.01)
+            train_WCL.tdim_random(args, run_wandb, train_domains_loader, test_domains_loader, device,
+                                        model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience)           
+        elif scenario == "w2b":
+            train_WCL_w2b.tdim_w2b(args, run_wandb, train_domains_loader, test_domains_loader, device,
+                                        model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience)    
+        elif scenario == "b2w":
+            train_WCL_b2w.tdim_b2w(args, run_wandb, train_domains_loader, test_domains_loader, device,
+                                        model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience)    
+            
+        
     
     elif algorithm == "SI":
         train_si.train_domain_incremental_model(train_domains_loader,test_domains_loader,full_domains_loader,model,num_epochs=args.epochs,
