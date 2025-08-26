@@ -6,11 +6,11 @@ declare -a EXTRA_FLAGS=()   # default empty; e.g. EXTRA_FLAGS=(--bidirectional)
 
 PROJECT="attack_CL"
 ENTITY="sourasb05"
-ARCH="LSTM_Attention"
+ARCH="LSTM_Attention_adapter"
 ALGO="WCL"
 SCENARIO="random"
 LR=0.001
-EPOCHS=3
+EPOCHS=100
 WINDOW=10
 STEP=3
 BATCH=256
@@ -19,11 +19,11 @@ HIDDEN=10
 OUTPUT=2
 LAYERS=3
 DROPOUT=0.05
-PATIENCE=2
+PATIENCE=30
 FORGET=0.01
 
 # Optional flags (leave empty or add --bidirectional)
-EXTRA_FLAGS=(--bidirectional)   # e.g., EXTRA_FLAGS=(--bidirectional)
+EXTRA_FLAGS=() # (--bidirectional)   # e.g., EXTRA_FLAGS=(--bidirectional)
 
 TS="$(date +%Y%m%d-%H%M%S)"
 
@@ -55,7 +55,7 @@ for i in {1..2}; do
     --forgetting_threshold "$FORGET"
   )
   # append optional flags safely
-  ARGS+=("${EXTRA_FLAGS[@]:-}")
+  # ARGS+=("${EXTRA_FLAGS[@]:-}")
 
   # show exactly what will be run (great for debugging)
   printf 'python main.py'; printf ' %q' "${ARGS[@]}"; printf '\n'
