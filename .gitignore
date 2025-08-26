@@ -221,3 +221,4 @@ wandb/
 *.tmp
 *.log
 *.pid
+attack_data/
