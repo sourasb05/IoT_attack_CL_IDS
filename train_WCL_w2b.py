@@ -20,6 +20,7 @@ import evaluation as evaluate
 import result_utils as result_utils
 import wandb
 from tqdm import tqdm
+from tqdm import trange
 
 # ===========================
 # Step: Train with Early Stopping, Logging, Model Saving, Catastrophic Forgetting Detection
@@ -62,7 +63,8 @@ def tdim_w2b(args, run_wandb, train_domain_loader, test_domain_loader, device,
     best_model_state = None  # Initialize best_model_state to avoid unbound errors
     idx=0
     train_domain = None
-    while idx <= len(train_domain_loader.keys()):
+    for idx in tqdm(range(len(train_domain_loader.keys())), desc="Iterating domains"):
+
         if train_domain == None:
             train_domain = random.choice(list(train_domain_loader.keys()))
         seen_domain.add(train_domain)
@@ -73,8 +75,10 @@ def tdim_w2b(args, run_wandb, train_domain_loader, test_domain_loader, device,
         wandb.define_metric(f"{train_domain}/*", step_metric=f"{train_domain}/epoch")
         
         logging.info(f"====== Evaluate Current domain {train_domain} on model built in previous domain : {previous_domain} ======")
+        
         # Evaluate on same domain's test set
         # Pre-train eval on this domain (plasticity)
+        
         if idx != 0:
             all_y_true, all_y_pred, all_y_prob = [], [], []
             if best_model_state is not None:
@@ -102,7 +106,7 @@ def tdim_w2b(args, run_wandb, train_domain_loader, test_domain_loader, device,
 
         # Train for the current domain with early stopping (evaluation on same domain's test set)
         
-        for epoch in range(num_epochs):
+        for epoch in trange(num_epochs):
             model.train()
             domain_epoch +=1
             epoch_start = time.perf_counter()
@@ -226,7 +230,7 @@ def tdim_w2b(args, run_wandb, train_domain_loader, test_domain_loader, device,
         # Generalization to all previous domains:
         logging.info(f"====== Evaluating on all previous domains after training on {train_domain} ======")
 
-        for test_domain in seen_domain:
+        for test_domain in tqdm(seen_domain, desc="Iterating over seen domains"):
             print(test_domain)
             if test_domain == train_domain:
                 continue
