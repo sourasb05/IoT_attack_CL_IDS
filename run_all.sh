@@ -23,7 +23,7 @@ PATIENCE=30
 FORGET=0.01
 
 # Optional flags (leave empty or add --bidirectional)
-EXTRA_FLAGS=() # (--bidirectional)   # e.g., EXTRA_FLAGS=(--bidirectional)
+EXTRA_FLAGS=(--bidirectional) # (--bidirectional)   # e.g., EXTRA_FLAGS=(--bidirectional)
 
 TS="$(date +%Y%m%d-%H%M%S)"
 
@@ -55,7 +55,7 @@ for i in {1..2}; do
     --forgetting_threshold "$FORGET"
   )
   # append optional flags safely
-  # ARGS+=("${EXTRA_FLAGS[@]:-}")
+  ARGS+=("${EXTRA_FLAGS[@]:-}")
 
   # show exactly what will be run (great for debugging)
   printf 'python main.py'; printf ' %q' "${ARGS[@]}"; printf '\n'

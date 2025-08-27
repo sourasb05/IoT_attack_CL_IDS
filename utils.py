@@ -162,7 +162,7 @@ def load_data(domain_path, key, domain_dataset, window_size=10, step_size=3, bat
     test_dataset  = TensorDataset(X_test,  y_test)
 
     train_loader = DataLoader(train_dataset, batch_size, shuffle=True, num_workers=4)
-    test_loader  = DataLoader(test_dataset,  batch_size, shuffle=False, num_workers=4)
+    test_loader  = DataLoader(test_dataset,  len(test_dataset), shuffle=False)
 
 
     # print("X_train:", X_train.shape, "y_train:", y_train.shape)
