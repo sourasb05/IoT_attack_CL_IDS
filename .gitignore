@@ -223,3 +223,4 @@ wandb/
 *.pid
 attack_data/
 condaenv.1_r0i4hk.requirements.txt
+slurm*

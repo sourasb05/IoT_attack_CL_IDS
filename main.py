@@ -1,7 +1,7 @@
 import utils as utils
 import models as models
 import train_CL as train_WCL
-import train_WCL_w2b as train_WCL_w2b
+import train_WCL_w2b_b2w_togg as train_WCL_w2b_b2w_togg
 import train_WCL_b2w as train_WCL_b2w
 import train_CL_SI as train_si
 import train_CL_EWC as train_ewc
@@ -106,25 +106,9 @@ def main():
     full_domains_loader = {}
 
     for key, files in domains.items():
-        
-        # Construct the expected file names for this experiment
-       
-        # print(f"train_file: {train_file} | val_file: {val_file}")
-        
-        # print(f"Processing domain: {key} with {len(files)} datasets : {files}")
-        # Check they exist inside this domain’s file list
-        # if train_file in files and val_file in files:
-        #    print(f"Experiment {exp_no} | Domain: {key} | Train file: {train_file} | Val file:   {val_file}")
 
         train_domains_loader[key], test_domains_loader[key] = utils.load_data(domains_path, key, files, window_size=args.window_size, step_size=args.step_size, batch_size=args.batch_size)
-        # print(train_domains_loader[key])
-        # print(test_domains_loader[key])
-        
-        # print(f"Train loader for domain {key} has {len(train_domains_loader[key])} batches")
-        # print(f"Test loader for domain {key} has {len(test_domains_loader[key])} batches")
-        
-        # logging.info(f"Exp {exp_no} | Domain: {key} | Train size: {len(train_domains_loader[key])} | Test size: {len(test_domains_loader[key])}")
-    
+          
     input_size = 140
     hidden_size = 10
     output_size = 2
@@ -155,13 +139,11 @@ def main():
         if scenario == "random":
             train_WCL.tdim_random(args, run_wandb, train_domains_loader, test_domains_loader, device,
                                         model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience)           
-        elif scenario == "w2b":
-            train_WCL_w2b.tdim_w2b(args, run_wandb, train_domains_loader, test_domains_loader, device,
-                                        model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience)    
-        elif scenario == "b2w":
-            train_WCL_b2w.tdim_b2w(args, run_wandb, train_domains_loader, test_domains_loader, device,
-                                        model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience)    
-            
+        elif scenario in ["w2b", "b2w", "toggle"]:
+            train_WCL_w2b_b2w_togg.tdim(args, run_wandb, train_domains_loader, test_domains_loader, device,
+                                        model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience)
+        else:
+            raise ValueError(f"Unknown scenario for WCL algorithm: {scenario}")
         
     
     elif algorithm == "SI":

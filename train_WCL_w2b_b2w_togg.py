@@ -20,11 +20,11 @@ import evaluation as evaluate
 import result_utils as result_utils
 import wandb
 from tqdm import tqdm
-
+from tqdm import trange
 # ===========================
 # Step: Train with Early Stopping, Logging, Model Saving, Catastrophic Forgetting Detection
 # ===========================
-def tdim_b2w(args, run_wandb, train_domain_loader, test_domain_loader, device,
+def tdim(args, run_wandb, train_domain_loader, test_domain_loader, device,
                                    model, exp_no, num_epochs=500, learning_rate=0.01, patience=3):
     """
     For each training domain, trains the model on that domain (with early stopping using F1).
@@ -45,6 +45,7 @@ def tdim_b2w(args, run_wandb, train_domain_loader, test_domain_loader, device,
     seen_domain = set()
     unseen_domain = set(train_domain_order)
     domain_to_id = {name: i for i, name in enumerate(train_domain_loader.keys())}
+    revised_train_domain_order = []
 
     # ---- W&B Enrich config for this run -----
     run_wandb.config.update({
@@ -62,9 +63,10 @@ def tdim_b2w(args, run_wandb, train_domain_loader, test_domain_loader, device,
     best_model_state = None  # Initialize best_model_state to avoid unbound errors
     idx=0
     train_domain = None
-    while idx <= len(train_domain_loader.keys()):
+    for idx in tqdm(range(len(train_domain_loader.keys())), desc="Iterating domains"):
         if train_domain == None:
             train_domain = random.choice(list(train_domain_loader.keys()))
+        revised_train_domain_order.append(train_domain)
         seen_domain.add(train_domain)
         unseen_domain.remove(train_domain)
         domain_id = domain_to_id[train_domain]
@@ -102,7 +104,7 @@ def tdim_b2w(args, run_wandb, train_domain_loader, test_domain_loader, device,
 
         # Train for the current domain with early stopping (evaluation on same domain's test set)
         
-        for epoch in range(num_epochs):
+        for epoch in trange(num_epochs, desc="Training epochs" ):
             model.train()
             domain_epoch +=1
             epoch_start = time.perf_counter()
@@ -226,8 +228,7 @@ def tdim_b2w(args, run_wandb, train_domain_loader, test_domain_loader, device,
         # Generalization to all previous domains:
         logging.info(f"====== Evaluating on all previous domains after training on {train_domain} ======")
 
-        for test_domain in seen_domain:
-            print(test_domain)
+        for test_domain in tqdm(seen_domain, desc="Seen Domain"):
             if test_domain == train_domain:
                 continue
             model.eval()
@@ -243,7 +244,7 @@ def tdim_b2w(args, run_wandb, train_domain_loader, test_domain_loader, device,
         # select next domain based on the generalization:
         logging.info(f"====== Evaluating on all unseen domains after training on {train_domain} ======")
         train_w2b = {domain: 0.0 for domain in unseen_domain}
-        for test_domain in tqdm(unseen_domain, desc="Finding next best domain"):
+        for test_domain in tqdm(unseen_domain, desc="Finding next domain"):
             model.eval()
             if args.architecture == "LSTM_Attention_adapter":
                 metrics = evaluate_model.eval_model(args, model, test_domain_loader, test_domain, device, domain_id=domain_to_id[test_domain])
@@ -252,9 +253,20 @@ def tdim_b2w(args, run_wandb, train_domain_loader, test_domain_loader, device,
             current_f1 = metrics["f1"]
             train_w2b[test_domain] = current_f1
         if train_w2b:
-            train_domain = max(train_w2b, key=train_w2b.get)
-            print(f"next train_domain : {train_domain}")
+            if args.scenario == "w2b":
+                train_domain = min(train_w2b, key=train_w2b.get)
+            elif args.scenario == "b2w":
+                train_domain = max(train_w2b, key=train_w2b.get)
+            elif args.scenario == "toggle":
+                if idx%2 == 0:
+                    train_domain = min(train_w2b, key=train_w2b.get)
+                else:
+                    train_domain = max(train_w2b, key=train_w2b.get)
+            
+            print(f" [{idx%2}] next train_domain  : {train_domain}")
+
         else:
+
             continue
         
         print(f"====== Finished Training on Domain: {train_domain} ======")
@@ -279,7 +291,7 @@ def tdim_b2w(args, run_wandb, train_domain_loader, test_domain_loader, device,
         "BWT_dict": bwt_dict,
         "FWT_values": fwt_values,
         "FWT_dict": fwt_dict,
-        "train_domain_order": train_domain_order,
+        "train_domain_order": revised_train_domain_order,
         "domain_training_cost": domain_training_cost,
     }
 

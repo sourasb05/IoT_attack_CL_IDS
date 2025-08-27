@@ -298,7 +298,7 @@ def parse_args():
                         help="Number of epochs to train the model")
     parser.add_argument("--algorithm", type=str, default="WCL",
                         help="Algorithm to use for continual learning (e.g., EWC, EWC_ZS, genreplay, SI, WCL)")
-    parser.add_argument("--scenario", type=str, default="w2b",
+    parser.add_argument("--scenario", type=str, default="toggle",
                         help="Scenario for training (e.g., random, b2w, w2b, clustered, toggle)")
     parser.add_argument("--exp_no", type=int, default=1,
                         help="Experiment number for logging")
