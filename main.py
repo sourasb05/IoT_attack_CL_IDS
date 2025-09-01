@@ -2,6 +2,7 @@ import utils as utils
 import models as models
 import train_CL as train_WCL
 import train_WCL_w2b_b2w_togg as train_WCL_w2b_b2w_togg
+import train_CL_EWC_w2b_b2w_togg as EWC_w2b_b2w_togg
 import train_WCL_b2w as train_WCL_b2w
 import train_CL_SI as train_si
 import train_CL_EWC as train_ewc
@@ -156,7 +157,7 @@ def main():
             train_ewc.tdim_ewc_random(args, run_wandb, train_domains_loader, test_domains_loader, device,
                                         model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience) 
         elif scenario in ["w2b","b2w","toggle"]:
-            train_ewc.tdim_ewc_random(args, run_wandb, train_domains_loader, test_domains_loader, device,
+            EWC_w2b_b2w_togg.tdim_ewc(args, run_wandb, train_domains_loader, test_domains_loader, device,
                                         model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience)
         
         elif scenario == "zero_shot":

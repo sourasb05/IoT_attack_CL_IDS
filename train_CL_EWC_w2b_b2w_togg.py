@@ -1,6 +1,7 @@
 import torch
 import os
 import time
+import random
 import torch.nn as nn
 import torch.optim as optim
 from torch.nn.utils import clip_grad_norm_
@@ -18,7 +19,9 @@ import evaluate_model
 import evaluation as evaluate
 import result_utils as result_utils
 import wandb
-from tqdm import tqdm, trange
+from tqdm import tqdm
+from tqdm import trange
+
 # ===================================
 # Elastic Weight Consolidation Class
 # ===================================
@@ -64,11 +67,10 @@ class EWC:
             reg += (self.fisher[n] * delta ** 2).sum()
         return self.lambda_ * reg
 
-
-# ===================================
-# Main Training Function with EWC
-# ===================================
-def tdim_ewc_random(args, run_wandb, train_domain_loader, test_domain_loader, device,
+# ===========================
+# Step: Train with Early Stopping, Logging, Model Saving, Catastrophic Forgetting Detection
+# ===========================
+def tdim_ewc(args, run_wandb, train_domain_loader, test_domain_loader, device,
                                    model, exp_no, num_epochs=500, learning_rate=0.01, patience=3):
     """
     For each training domain, trains the model on that domain (with early stopping using F1).
@@ -84,17 +86,18 @@ def tdim_ewc_random(args, run_wandb, train_domain_loader, test_domain_loader, de
     performance_stability = {test_domain: [] for test_domain in test_domain_loader.keys()}
     performance_plasticity = {test_domain: [] for test_domain in test_domain_loader.keys()}
     domain_training_cost = {test_domain: [] for test_domain in test_domain_loader.keys()}
-
-    seen_domain = set()
+    
     train_domain_order = list(train_domain_loader.keys())
+    seen_domain = set()
+    unseen_domain = set(train_domain_order)
     domain_to_id = {name: i for i, name in enumerate(train_domain_loader.keys())}
-    ewc_list = []  # Track EWC penalties from past tasks
+    revised_train_domain_order = []
 
     # ---- W&B Enrich config for this run -----
     run_wandb.config.update({
         "batch_size": args.batch_size,
         "Loss Function": "CrossEntropyLoss",
-        "optimizer": "AdamW",
+        "optimizer": "Adam",
         "weight_decay": 0.0,
         "train_domains": train_domain_order
     })
@@ -104,14 +107,19 @@ def tdim_ewc_random(args, run_wandb, train_domain_loader, test_domain_loader, de
 
     previous_domain = None
     best_model_state = None  # Initialize best_model_state to avoid unbound errors
-    for idx, train_domain in enumerate(tqdm(list(train_domain_loader.keys()),
-                                            desc="Train Domains", total=len(train_domain_loader))):
-        
+    idx=0
+    train_domain = None
+    for idx in tqdm(range(len(train_domain_loader.keys())), desc="Iterating domains"):
+        if train_domain == None:
+            train_domain = random.choice(list(train_domain_loader.keys()))
+        revised_train_domain_order.append(train_domain)
+        seen_domain.add(train_domain)
+        unseen_domain.remove(train_domain)
         domain_id = domain_to_id[train_domain]
+        ewc_list = []  # Track EWC penalties from past tasks
         domain_epoch = 0
         wandb.define_metric(f"{train_domain}/epoch")
         wandb.define_metric(f"{train_domain}/*", step_metric=f"{train_domain}/epoch")
-        
         
         logging.info(f"====== Evaluate Current domain {train_domain} on model built in previous domain : {previous_domain} ======")
         # Evaluate on same domain's test set
@@ -145,7 +153,7 @@ def tdim_ewc_random(args, run_wandb, train_domain_loader, test_domain_loader, de
         def total_ewc_penalty():
             return sum([ewc.penalty() for ewc in ewc_list]) if ewc_list else 0.0
 
-        for epoch in trange(num_epochs, desc="training Epochs"):
+        for epoch in trange(num_epochs, desc="Training Epochs" ):
             model.train()
             domain_epoch +=1
             epoch_start = time.perf_counter()
@@ -159,7 +167,6 @@ def tdim_ewc_random(args, run_wandb, train_domain_loader, test_domain_loader, de
                     outputs, _ = model(X_batch, domain_id=domain_id)  # Pass domain_id to the model
                 else:
                     outputs, _ = model(X_batch)  # Pass domain_id to the model
-                
                 loss = criterion(outputs, y_batch.long()) + total_ewc_penalty()
                 loss.backward()
                 clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -213,7 +220,7 @@ def tdim_ewc_random(args, run_wandb, train_domain_loader, test_domain_loader, de
                 f"{train_domain}/epoch": domain_epoch,
                 f"{train_domain}/val_loss": float(test_loss),
                 f"{train_domain}/val_f1": float(current_f1),
-                f"{train_domain}/val_ROC_AUC": float(current_auc_roc)
+                f"{train_domain}/val_AUC_ROC": float(current_auc_roc)
                 # plus any others from your metrics dict...
             })
 
@@ -236,7 +243,6 @@ def tdim_ewc_random(args, run_wandb, train_domain_loader, test_domain_loader, de
         domain_training_time = time.perf_counter() - t0
         logging.info(f"Training time for {train_domain}: {domain_training_time:.2f} seconds")
         domain_training_cost[train_domain].append(domain_training_time)
-        
         # Restore best state and save model checkpoint for current domain
         if best_model_state is not None:
 
@@ -275,9 +281,8 @@ def tdim_ewc_random(args, run_wandb, train_domain_loader, test_domain_loader, de
 
         # Generalization to all previous domains:
         logging.info(f"====== Evaluating on all previous domains after training on {train_domain} ======")
-        seen_domain.add(train_domain)
-        for test_domain in tqdm(seen_domain, desc="Stability test"):
-            print(test_domain)
+
+        for test_domain in tqdm(seen_domain, desc="Seen Domain"):
             if test_domain == train_domain:
                 continue
             model.eval()
@@ -290,6 +295,34 @@ def tdim_ewc_random(args, run_wandb, train_domain_loader, test_domain_loader, de
             
             logging.info(f"performance_stability | {test_domain}: {performance_stability[test_domain]}")
 
+        # select next domain based on the generalization:
+        logging.info(f"====== Evaluating on all unseen domains after training on {train_domain} ======")
+        train_w2b = {domain: 0.0 for domain in unseen_domain}
+        for test_domain in tqdm(unseen_domain, desc="Finding next domain"):
+            model.eval()
+            if args.architecture == "LSTM_Attention_adapter":
+                metrics = evaluate_model.eval_model(args, model, test_domain_loader, test_domain, device, domain_id=domain_to_id[test_domain])
+            else:
+                metrics = evaluate_model.eval_model(args, model, test_domain_loader, test_domain, device, domain_id=None)
+            current_f1 = metrics["f1"]
+            train_w2b[test_domain] = current_f1
+        if train_w2b:
+            if args.scenario == "w2b":
+                train_domain = min(train_w2b, key=train_w2b.get)
+            elif args.scenario == "b2w":
+                train_domain = max(train_w2b, key=train_w2b.get)
+            elif args.scenario == "toggle":
+                if idx%2 == 0:
+                    train_domain = min(train_w2b, key=train_w2b.get)
+                else:
+                    train_domain = max(train_w2b, key=train_w2b.get)
+            
+            print(f" [{idx%2}] next train_domain  : {train_domain}")
+
+        else:
+
+            continue
+        
         print(f"====== Finished Training on Domain: {train_domain} ======")
 
     # Final Metrics: BWT / FWT
@@ -304,7 +337,6 @@ def tdim_ewc_random(args, run_wandb, train_domain_loader, test_domain_loader, de
     logging.info(f"FWT per domain: {fwt_dict}")
 
 
-
     results_to_save = {
         "exp_no": exp_no,
         "performance_stability": performance_stability,
@@ -313,7 +345,7 @@ def tdim_ewc_random(args, run_wandb, train_domain_loader, test_domain_loader, de
         "BWT_dict": bwt_dict,
         "FWT_values": fwt_values,
         "FWT_dict": fwt_dict,
-        "train_domain_order": train_domain_order,
+        "train_domain_order": revised_train_domain_order,
         "domain_training_cost": domain_training_cost,
     }
 
@@ -336,175 +368,3 @@ def tdim_ewc_random(args, run_wandb, train_domain_loader, test_domain_loader, de
     run_wandb.log({"bwt_metrics": tbl2})
     
     
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-
-"""
-----------------------------------
-            Old code 
-__________________________________"""
-"""
-def tdim_ewc_random_old(scenario, device,train_domain_loader, test_domain_loader, full_domain_loader,
-                                   model, num_epochs=20, learning_rate=0.01, patience=3,
-                                   forgetting_threshold=0.01):
-    exp_no = 0
-    
-    model.to(device)
-
-    criterion = nn.CrossEntropyLoss()
-    optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-
-    ewc_list = []  # Track EWC penalties from past tasks
-
-    performance_history = {test_domain: [] for test_domain in test_domain_loader.keys()}
-    performance_matrix = {test_domain: [] for test_domain in test_domain_loader.keys()}
-
-    forget_counter_dictionary = {}
-
-
-    remaining_train_domains = set(train_domain_loader.keys())
-    used_train_domains = set()
-    train_domain_order = []
-
-    logging.info(f"Training on {len(remaining_train_domains)} domains.")
-
-    while remaining_train_domains:
-        optimizer = optim.Adam(model.parameters(), lr=learning_rate)
-
-        if not used_train_domains:
-            train_domain = remaining_train_domains.pop()
-        else:
-            logging.info(f"performance_matrix: {performance_matrix}")
-            available_domains = {d: performance_matrix[d][-1] if performance_matrix[d] else 0.0
-                                 for d in remaining_train_domains}
-            if not available_domains:
-                break
-            
-            if scenario == "Generalization_worst":
-                train_domain = min(available_domains.items(), key=lambda x: x[1])[0]
-            elif scenario == "Generalization_best":
-                train_domain = max(available_domains.items(), key=lambda x: x[1])[0]
-            remaining_train_domains.remove(train_domain)
-
-        used_train_domains.add(train_domain)
-        train_domain_order.append(train_domain)
-        logging.info(f"====== Training on Domain: {train_domain} : {len(used_train_domains)}/{len(train_domain_loader)} ======")
-
-        best_f1 = -float("inf")
-        epochs_no_improve = 0
-        best_model_state = None
-
-
-        model.train()
-
-        # Compute EWC regularization from all past tasks
-        def total_ewc_penalty():
-            return sum([ewc.penalty() for ewc in ewc_list]) if ewc_list else 0.0
-
-        for epoch in range(num_epochs):
-            epoch_loss = 0.0
-            for i, (X_batch, y_batch) in enumerate(train_domain_loader[train_domain][exp_no]):
-                X_batch, y_batch = X_batch.to(device), y_batch.to(device)
-                optimizer.zero_grad()
-                outputs = model(X_batch)
-
-                loss = criterion(outputs, y_batch.long()) + total_ewc_penalty()
-                loss.backward()
-                torch.nn.utils.clip_grad_norm_(model.parameters(), max_norm=1.0)
-                optimizer.step()
-                epoch_loss += loss.item()
-
-            epoch_loss /= (i + 1)
-
-            # Validation on the same domain
-            all_y_true, all_y_pred, all_y_prob = [], [], []
-            model.eval()
-            with torch.no_grad():
-                for X_batch, y_batch in test_domain_loader[train_domain][0]:
-                    X_batch, y_batch = X_batch.to(device), y_batch.to(device)
-                    outputs = model(X_batch)
-                    _, predicted = torch.max(outputs.data, 1)
-                    all_y_true.extend(y_batch.cpu().numpy())
-                    all_y_pred.extend(predicted.cpu().numpy())
-                    all_y_prob.extend(torch.nn.functional.softmax(outputs, dim=1)[:, 1].cpu().numpy())
-
-            metrics = evaluate.evaluate_metrics(np.array(all_y_true), np.array(all_y_pred),
-                                                np.array(all_y_prob), train_domain, train_domain)
-            current_f1 = metrics["f1"]
-            logging.info(f"Early Stopping | Domain: {train_domain} | Epoch: {epoch+1} | F1: {current_f1:.4f}")
-
-            if current_f1 > best_f1:
-                best_f1 = current_f1
-                best_model_state = deepcopy(model.state_dict())
-                epochs_no_improve = 0
-            else:
-                epochs_no_improve += 1
-
-            if epochs_no_improve >= patience:
-                logging.info(f"Early stopping for {train_domain} at epoch {epoch+1}")
-                break
-
-        # Restore best model
-        if best_model_state is not None:
-            model.load_state_dict(best_model_state)
-            model_save_path = f"models/exp_no_{exp_no}/best_model_after_{train_domain}.pt"
-            os.makedirs(os.path.dirname(model_save_path), exist_ok=True)
-            torch.save(best_model_state, model_save_path)
-            logging.info(f"Best model for {train_domain} saved to {model_save_path}")
-        else:
-            logging.info(f"No best model found for {train_domain}")
-
-        # Create EWC object for this domain and append to list
-        ewc_data_loader = train_domain_loader[train_domain][exp_no]
-        ewc_instance = EWC(model, ewc_data_loader, device, lambda_=900, fisher_n_samples=None)
-        ewc_list.append(ewc_instance)
-
-        # Evaluation on all test domains
-        overall_metrics = {}
-        for test_domain in test_domain_loader.keys():
-            all_y_true, all_y_pred, all_y_prob = [], [], []
-            model.eval()
-            with torch.no_grad():
-                for X_batch, y_batch in test_domain_loader[test_domain][0]:
-                    X_batch, y_batch = X_batch.to(device), y_batch.to(device)
-                    outputs = model(X_batch)
-                    _, predicted = torch.max(outputs.data, 1)
-                    all_y_true.extend(y_batch.cpu().numpy())
-                    all_y_pred.extend(predicted.cpu().numpy())
-                    all_y_prob.extend(torch.nn.functional.softmax(outputs, dim=1)[:, 1].cpu().numpy())
-
-            metrics = evaluate.evaluate_metrics(np.array(all_y_true), np.array(all_y_pred),
-                                                np.array(all_y_prob), test_domain, train_domain)
-            overall_metrics[test_domain] = metrics
-            performance_history[test_domain].append(metrics["f1"])
-            performance_matrix[test_domain].append(metrics["f1"])
-
-     
-        
-"""
-   

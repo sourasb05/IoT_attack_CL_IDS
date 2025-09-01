@@ -161,7 +161,7 @@ def load_data(domain_path, key, domain_dataset, window_size=10, step_size=3, bat
     train_dataset = TensorDataset(X_train, y_train)
     test_dataset  = TensorDataset(X_test,  y_test)
 
-    train_loader = DataLoader(train_dataset, batch_size, shuffle=True, num_workers=4)
+    train_loader = DataLoader(train_dataset, batch_size, shuffle=True)
     test_loader  = DataLoader(test_dataset,  len(test_dataset), shuffle=False)
 
 
@@ -298,7 +298,7 @@ def parse_args():
                         help="Number of epochs to train the model")
     parser.add_argument("--algorithm", type=str, default="EWC",
                         help="Algorithm to use for continual learning (e.g., EWC, EWC_ZS, genreplay, SI, WCL)")
-    parser.add_argument("--scenario", type=str, default="random",
+    parser.add_argument("--scenario", type=str, default="b2w",
                         help="Scenario for training (e.g., random, b2w, w2b, clustered, toggle)")
     parser.add_argument("--exp_no", type=int, default=1,
                         help="Experiment number for logging")
