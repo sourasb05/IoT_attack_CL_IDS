@@ -1,16 +1,23 @@
 import torch
 import os
+import time
 import torch.nn as nn
 import torch.optim as optim
+from torch.nn.utils import clip_grad_norm_
+import matplotlib.pyplot as plt
 import numpy as np
+import pandas as pd
 from copy import deepcopy
 import logging
+import sys
 import warnings
 warnings.filterwarnings("ignore")
-from utils import save_results_as_json
+from utils import save_results_as_json, _sync
+import evaluate_model
+# import result_utils
 import evaluation as evaluate
-import sys
-from termcolor import colored
+import result_utils as result_utils
+import wandb
 
 # ===================================
 # Elastic Weight Consolidation Class
@@ -61,7 +68,306 @@ class EWC:
 # ===================================
 # Main Training Function with EWC
 # ===================================
-def train_domain_incremental_model(scenario, device,train_domain_loader, test_domain_loader, full_domain_loader,
+def tdim_ewc_random(args, run_wandb, train_domain_loader, test_domain_loader, device,
+                                   model, exp_no, num_epochs=500, learning_rate=0.01, patience=3):
+    """
+    For each training domain, trains the model on that domain (with early stopping using F1).
+    After training on a domain, it evaluates on all test domains, logs the metrics, updates
+    performance history, computes catastrophic forgetting, and plots graphs for precision,
+    recall, and confusion matrices.
+    """
+    exp_no=exp_no
+    criterion = nn.CrossEntropyLoss()
+    optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
+
+
+    performance_stability = {test_domain: [] for test_domain in test_domain_loader.keys()}
+    performance_plasticity = {test_domain: [] for test_domain in test_domain_loader.keys()}
+    domain_training_cost = {test_domain: [] for test_domain in test_domain_loader.keys()}
+
+    seen_domain = set()
+    train_domain_order = list(train_domain_loader.keys())
+    domain_to_id = {name: i for i, name in enumerate(train_domain_loader.keys())}
+    ewc_list = []  # Track EWC penalties from past tasks
+
+    # ---- W&B Enrich config for this run -----
+    run_wandb.config.update({
+        "batch_size": args.batch_size,
+        "Loss Function": "CrossEntropyLoss",
+        "optimizer": "AdamW",
+        "weight_decay": 0.0,
+        "train_domains": train_domain_order
+    })
+
+    # --- W&B: watch gradients/params (adjust log_freq if heavy) ---
+    run_wandb.watch(model, criterion=criterion, log="all", log_freq=50)
+
+    previous_domain = None
+    best_model_state = None  # Initialize best_model_state to avoid unbound errors
+    for idx, train_domain in enumerate(train_domain_loader.keys()):
+        domain_id = domain_to_id[train_domain]
+        domain_epoch = 0
+        wandb.define_metric(f"{train_domain}/epoch")
+        wandb.define_metric(f"{train_domain}/*", step_metric=f"{train_domain}/epoch")
+        
+        
+        logging.info(f"====== Evaluate Current domain {train_domain} on model built in previous domain : {previous_domain} ======")
+        # Evaluate on same domain's test set
+        # Pre-train eval on this domain (plasticity)
+        if idx != 0:
+            all_y_true, all_y_pred, all_y_prob = [], [], []
+            if best_model_state is not None:
+                model.load_state_dict(best_model_state)
+            else:
+                logging.warning("best_model_state is uninitialized. Skipping model loading.")
+            model.eval()
+            if args.architecture == "LSTM_Attention_adapter":
+                metrics = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=domain_id)
+            else:
+                metrics = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=None)
+            current_f1= metrics["f1"]
+            performance_plasticity[train_domain].append(current_f1)
+            logging.info(f" F1 : Previous domain : {previous_domain} : Current Domain {train_domain}: {current_f1:.4f}")
+            # --- W&B ---
+            run_wandb.log({f"{train_domain}/pretrain_f1": float(current_f1)})
+
+        logging.info(f"====== Training on Domain: {train_domain} ======")
+
+        best_f1 = -float("inf")
+        epochs_no_improve = 0
+
+        _sync(device)
+        t0 = time.perf_counter()
+
+        # Train for the current domain with early stopping (evaluation on same domain's test set)
+        def total_ewc_penalty():
+            return sum([ewc.penalty() for ewc in ewc_list]) if ewc_list else 0.0
+
+        for epoch in range(num_epochs):
+            model.train()
+            domain_epoch +=1
+            epoch_start = time.perf_counter()
+            epoch_loss = 0.0
+            i = -1  # Initialize i to ensure it's defined even if the loop doesn't execute
+            for i, (X_batch, y_batch) in enumerate(train_domain_loader[train_domain]):
+                X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+        
+                optimizer.zero_grad()
+                if args.architecture == "LSTM_Attention_adapter":
+                    outputs, _ = model(X_batch, domain_id=domain_id)  # Pass domain_id to the model
+                else:
+                    outputs, _ = model(X_batch)  # Pass domain_id to the model
+                
+                loss = criterion(outputs, y_batch.long()) + total_ewc_penalty()
+                loss.backward()
+                clip_grad_norm_(model.parameters(), max_norm=1.0)
+                optimizer.step()
+                epoch_loss += loss.item()
+            
+            epoch_loss /= (i+1) if i >= 0 else 1  # Avoid division by zero if the loop doesn't execute
+            
+            _sync(device)
+            epoch_time = time.perf_counter() - epoch_start
+            logging.info(f"[{train_domain}] | Epoch [{epoch+1}/{num_epochs}] | Train Loss: {epoch_loss:.4f} | Time: {epoch_time:.2f}s")    
+
+            # --- W&B: per-epoch train metrics ---
+            run_wandb.log({
+                f"{train_domain}/epoch": domain_epoch,
+                f"{train_domain}/train_loss": float(epoch_loss),
+                f"{train_domain}/epoch_time_s": float(epoch_time),      
+            })
+
+            # Evaluate on same domain's test set
+            
+            all_y_true, all_y_pred, all_y_prob = [], [], []
+            model.eval()
+            test_loss = 0.0
+            with torch.no_grad():
+                # for id_test_domain in range(len(test_domain_loader[train_domain])):
+                for X_batch, y_batch in test_domain_loader[train_domain]:
+                    X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+                    if args.architecture == "LSTM_Attention_adapter":
+                        outputs, _ = model(X_batch, domain_id=domain_id)  # Pass domain_id to the model
+                    else:
+                        outputs, _ = model(X_batch)
+                    loss = criterion(outputs, y_batch.long())
+                    _, predicted = torch.max(outputs.data, 1)
+                    all_y_true.extend(y_batch.cpu().numpy())
+                    all_y_pred.extend(predicted.cpu().numpy())
+                    all_y_prob.extend(torch.nn.functional.softmax(outputs, dim=1)[:, 1].cpu().numpy())
+                    test_loss += loss.item()
+            test_loss /= max(1, len(test_domain_loader[train_domain]))
+              
+            metrics = evaluate.evaluate_metrics(np.array(all_y_true), np.array(all_y_pred), 
+                                np.array(all_y_prob), train_domain, train_domain)
+            current_f1 = metrics["f1"]
+            current_auc_roc = metrics["roc_auc"]
+            
+            logging.info(f"[{train_domain}] | Epoch: {epoch+1}/{num_epochs} |  Test Loss: {test_loss}  | F1: {current_f1:.4f} | AUC-ROC: {current_auc_roc:.4f}")
+            
+             # --- W&B: per-epoch val metrics (log numeric items) ---
+            # after you compute validation metrics
+            run_wandb.log({
+                f"{train_domain}/epoch": domain_epoch,
+                f"{train_domain}/val_loss": float(test_loss),
+                f"{train_domain}/val_f1": float(current_f1),
+                f"{train_domain}/val_ROC_AUC": float(current_auc_roc),
+                # plus any others from your metrics dict...
+            })
+
+
+
+            if current_f1 > best_f1:
+                best_f1 = current_f1
+                best_model_state = deepcopy(model.state_dict())
+                epochs_no_improve = 0
+                logging.info(f"New best F1 for {train_domain}: {best_f1:.4f}")
+            else:
+                epochs_no_improve += 1
+                logging.info(f"No improvement. Count: {epochs_no_improve}")
+            
+            if epochs_no_improve >= patience:
+                logging.info(f"Early stopping triggered for {train_domain} at epoch {epoch+1}")
+                # print(f"Early stopping triggered for {train_domain} at epoch {epoch+1}")
+                break
+        _sync(device)
+        domain_training_time = time.perf_counter() - t0
+        logging.info(f"Training time for {train_domain}: {domain_training_time:.2f} seconds")
+        domain_training_cost[train_domain].append(domain_training_time)
+        
+        # Restore best state and save model checkpoint for current domain
+        if best_model_state is not None:
+
+            model.load_state_dict(best_model_state)
+            model_save_path = f"models/exp_no_{exp_no}_{args.architecture}_{args.algorithm}_{args.scenario}/best_model_after_{train_domain}.pt"
+            os.makedirs(os.path.dirname(model_save_path), exist_ok=True)
+            torch.save(best_model_state, model_save_path)
+            logging.info(f"Best model for {train_domain} saved to {model_save_path}")
+            previous_domain = train_domain
+        # print(f"Best model for {train_domain} saved to {model_save_path}")
+        else:
+            logging.info(f"No improvement for {train_domain}. Model not saved.")
+        # print(f"No improvement for {train_domain}. Model not saved.")
+
+        # Create EWC object for this domain and append to list
+        ewc_data_loader = train_domain_loader[train_domain]
+        ewc_instance = EWC(model, ewc_data_loader, device, lambda_=900, fisher_n_samples=None)
+        ewc_list.append(ewc_instance)
+        
+        # Evaluate on the best model on the currently trained domain 
+        model.load_state_dict(best_model_state)
+        model.eval()
+        if args.architecture == "LSTM_Attention_adapter":
+            best_metrices = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=domain_id)
+        else:
+            best_metrices = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=None)
+        
+        current_f1 = best_metrices["f1"]
+        performance_plasticity[train_domain].append(current_f1)
+        performance_stability[train_domain].append(current_f1)
+        logging.info(f" F1 : Current Domain {train_domain}: {current_f1:.4f}")
+        logging.info(f"performance_plasticity: {performance_plasticity}")
+        logging.info(f"metrics: {best_metrices}")
+
+
+
+        # Generalization to all previous domains:
+        logging.info(f"====== Evaluating on all previous domains after training on {train_domain} ======")
+        seen_domain.add(train_domain)
+        for test_domain in seen_domain:
+            print(test_domain)
+            if test_domain == train_domain:
+                continue
+            model.eval()
+            if args.architecture == "LSTM_Attention_adapter":
+                metrics = evaluate_model.eval_model(args, model, test_domain_loader, test_domain, device, domain_id=domain_to_id[test_domain])
+            else:
+                metrics = evaluate_model.eval_model(args, model, test_domain_loader, test_domain, device, domain_id=None)
+            current_f1 = metrics["f1"]
+            performance_stability[test_domain].append(current_f1)
+            
+            logging.info(f"performance_stability | {test_domain}: {performance_stability[test_domain]}")
+
+        print(f"====== Finished Training on Domain: {train_domain} ======")
+
+    # Final Metrics: BWT / FWT
+    logging.info(f"====== Final Metrics after training on all domains ======")
+    bwt_values, bwt_dict, bwt_values_dict = result_utils.compute_BWT(performance_stability, train_domain_order)
+    fwt_values, fwt_dict = result_utils.compute_FWT(performance_plasticity, train_domain_order)
+    logging.info(f"\n BWT: {bwt_values}")
+    logging.info(f"\n BWT of all previous domain corresponding to the training domain: {bwt_values_dict}")
+    logging.info(f"\n BWT per domain: {bwt_dict}")
+
+    logging.info(f"FWT: {fwt_values}")
+    logging.info(f"FWT per domain: {fwt_dict}")
+
+
+
+    results_to_save = {
+        "exp_no": exp_no,
+        "performance_stability": performance_stability,
+        "performance_m": performance_plasticity,
+        "BWT_values": bwt_values,
+        "BWT_dict": bwt_dict,
+        "FWT_values": fwt_values,
+        "FWT_dict": fwt_dict,
+        "train_domain_order": train_domain_order,
+        "domain_training_cost": domain_training_cost,
+    }
+
+    save_results_as_json(results_to_save, filename=f"{exp_no}_experiment_results_{args.architecture}_{args.algorithm}_{args.scenario}.json")
+    logging.info("Final training complete. Results saved.")
+
+    run_wandb.summary["BWT/list"] =  bwt_values
+    run_wandb.summary["FWT/list"] =  fwt_values
+
+
+    tbl1 = wandb.Table(columns=["domain", "FWT"])
+    for dom in train_domain_order:
+        tbl1.add_data(dom,  fwt_dict.get(dom, None))
+    run_wandb.log({"fwt_metrics": tbl1})
+    
+
+    tbl2 = wandb.Table(columns=["domain", "BWT"])
+    for dom in train_domain_order:
+        tbl2.add_data(dom,  bwt_values_dict.get(dom, None))
+    run_wandb.log({"bwt_metrics": tbl2})
+    
+    
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+
+"""
+----------------------------------
+            Old code 
+__________________________________"""
+"""
+def tdim_ewc_random_old(scenario, device,train_domain_loader, test_domain_loader, full_domain_loader,
                                    model, num_epochs=20, learning_rate=0.01, patience=3,
                                    forgetting_threshold=0.01):
     exp_no = 0
@@ -76,25 +382,6 @@ def train_domain_incremental_model(scenario, device,train_domain_loader, test_do
     performance_history = {test_domain: [] for test_domain in test_domain_loader.keys()}
     performance_matrix = {test_domain: [] for test_domain in test_domain_loader.keys()}
 
-    # train_domain_order = list(train_domain_loader.keys())
-    """ train_domain_order = [
-    'worstparent_var15_dec', 'worstparent_var20_oo', 'worstparent_var20_base',
-    'localrepair_var20_base', 'blackhole_var15_oo', 'localrepair_var20_dec',
-    'worstparent_var20_dec', 'worstparent_var10_dec', 'localrepair_var20_oo',
-    'localrepair_var15_dec', 'blackhole_var20_oo', 'worstparent_var10_base',
-    'localrepair_var10_dec', 'worstparent_var10_oo', 'worstparent_var5_oo',
-    'blackhole_var10_oo', 'localrepair_var15_oo', 'blackhole_var5_oo',
-    'worstparent_var5_dec', 'blackhole_var10_dec', 'localrepair_var10_base',
-    'localrepair_var5_oo', 'blackhole_var10_base', 'blackhole_var15_dec',
-    'blackhole_var20_dec', 'worstparent_var5_base', 'disflooding_var5_base',
-    'localrepair_var5_dec', 'worstparent_var15_base', 'worstparent_var15_oo',
-    'disflooding_var10_dec', 'localrepair_var15_base', 'disflooding_var5_dec',
-    'localrepair_var10_oo', 'disflooding_var15_base', 'disflooding_var5_oo',
-    'blackhole_var5_dec', 'disflooding_var20_oo', 'disflooding_var10_base',
-    'blackhole_var15_base', 'disflooding_var20_base', 'disflooding_var15_dec',
-    'disflooding_var20_dec', 'disflooding_var10_oo', 'blackhole_var20_base',
-    'blackhole_var5_base', 'disflooding_var15_oo', 'localrepair_var5_base'
-    ]"""
     forget_counter_dictionary = {}
 
 
@@ -129,6 +416,7 @@ def train_domain_incremental_model(scenario, device,train_domain_loader, test_do
         best_f1 = -float("inf")
         epochs_no_improve = 0
         best_model_state = None
+
 
         model.train()
 
@@ -214,93 +502,7 @@ def train_domain_incremental_model(scenario, device,train_domain_loader, test_do
             performance_history[test_domain].append(metrics["f1"])
             performance_matrix[test_domain].append(metrics["f1"])
 
-        # === Generalization Gap after this domain ===
-        seen_domains = set(train_domain_order[:train_domain_order.index(train_domain)+1])
-        unseen_domains = set(test_domain_loader.keys()) - seen_domains
-
-        print(f"\n--- Generalization Gap Report after training on {train_domain} ---\n")
-
-        seen_accs = [performance_matrix[d][-1] for d in seen_domains if performance_matrix[d]]
-        unseen_accs = [performance_matrix[d][-1] for d in unseen_domains if performance_matrix[d]]
-        logging.info(f"Seen Domains: {seen_domains}")
-        logging.info(f"Unseen Domains: {unseen_domains}")
-        logging.info(f"Performance Matrix: {performance_matrix}")
-        logging.info(f"Seen Accuracies: {seen_accs}")
-        logging.info(f"Unseen Accuracies: {unseen_accs}")
-       
-        if seen_accs and unseen_accs:
-            seen_avg = np.mean(seen_accs)
-            unseen_avg = np.mean(unseen_accs)
-            gen_gap = seen_avg - unseen_avg
-            print(f"[{train_domain}] Seen Avg: {seen_avg:.4f} | Unseen Avg: {unseen_avg:.4f} | Gen Gap: {gen_gap:.4f}")
-            logging.info(f"[{train_domain}] Seen Avg: {seen_avg:.4f} | Unseen Avg: {unseen_avg:.4f} | Gen Gap: {gen_gap:.4f}")
-        else:
-            print(f"[{train_domain}] Insufficient data to compute generalization gap.")
-
-
-        if len(train_domain_order) > 1:
-            t = train_domain_order.index(train_domain)  # current task index (0-based)
-            if t > 0:
-                bwt_scores = []
-                for i in range(t):  # previous tasks 0 to t-1
-                    domain_i = train_domain_order[i]
-                    final_perf = performance_matrix[domain_i][t]   # after training on task t
-                    original_perf = performance_matrix[domain_i][i]  # after training on task i
-                    bwt_scores.append(final_perf - original_perf)
-
-                bwt_so_far = np.mean(bwt_scores)
-                print(f"BWT after training on {train_domain}: {bwt_so_far:.4f}")
-                logging.info(f"BWT after training on {train_domain}: {bwt_so_far:.4f}")
+     
         
-        
-
-        # Generalization analysis
-        print(f"\n--- Improvement in F1 Score after training on {train_domain} ---\n")
-        forget_counter = 0
-        not_forget_counter = 0
-        for test_domain, history in performance_history.items():
-            current_F1 = history[-1]
-            best_so_far = max(history)
-            forgetting = best_so_far - current_F1
-            if forgetting > forgetting_threshold:
-                forget_counter += 1
-                logging.info(f"{test_domain}: Generalization Gap={forgetting:.4f} --> Significant Drop in F1 Score Detected!")
-            else:
-                not_forget_counter += 1
-                logging.info(f"{test_domain}: Generalization Gap={forgetting:.4f} --> No Significant Drop in F1 Score Detected.")
-        forget_ratio = forget_counter / (forget_counter + not_forget_counter) * 100
-        logging.info(f"F1 Score dropped in {forget_counter}/{forget_counter + not_forget_counter} domains ({forget_ratio:.2f}%)")
-        forget_counter_dictionary[train_domain] = forget_ratio
-
-    # Final Metrics: BWT / FWT
-    T = len(train_domain_order)
-    test_domains = list(performance_matrix.keys())
-    perf_array = np.zeros((T, T))
-    for i, test_domain in enumerate(test_domains):
-        perf_array[:, i] = performance_matrix[test_domain]
-    logging.info(f"Perdoemance matrix: {perf_array}")
-
-    bwt_values = [perf_array[-1, i] - perf_array[i, i] for i in range(T - 1)]
-    BWT = np.mean(bwt_values)
-
-    fwt_values = [perf_array[i - 1, i] for i in range(1, T)]
-    FWT = np.mean(fwt_values)
-
-    
-    
-    logging.info(f"BWT: {BWT:.4f}")
-    logging.info(f"FWT: {FWT:.4f}")
-    logging.info(f"BWT per task: {bwt_values}")
-
+"""
    
-    results_to_save = {
-        "performance_history": performance_history,
-        "performance_matrix": performance_matrix,
-        "forget_counter_dictionary": forget_counter_dictionary,
-        "BWT": BWT,
-        "FWT": FWT,
-        "train_domain_order": train_domain_order,
-    }
-
-    save_results_as_json(results_to_save, filename=f"{exp_no}_experiment_results_EWC.json")
-    logging.info("Final training complete. Results saved.")

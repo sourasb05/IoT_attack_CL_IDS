@@ -152,9 +152,13 @@ def main():
     
     elif algorithm == "EWC":
         # Train using EWC
-        if scenario == "Generalization_worst" or scenario == "Generalization_best":
-            train_ewc.train_domain_incremental_model(scenario,device,train_domains_loader,test_domains_loader,full_domains_loader,model,
-                    num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience, forgetting_threshold=args.forgetting_threshold)
+        if scenario == "random":
+            train_ewc.tdim_ewc_random(args, run_wandb, train_domains_loader, test_domains_loader, device,
+                                        model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience) 
+        elif scenario in ["w2b","b2w","toggle"]:
+            train_ewc.tdim_ewc_random(args, run_wandb, train_domains_loader, test_domains_loader, device,
+                                        model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience)
+        
         elif scenario == "zero_shot":
             train_ewc_zs.train_domain_incremental_model(
                     scenario,device,train_domains_loader,test_domains_loader, full_domains_loader, model,
@@ -165,7 +169,10 @@ def main():
                     tau=0.3,
                     delta=0.8
                 )
-    
+
+        else:
+            raise ValueError(f"Unknown scenario for EWC algorithm: {scenario}")
+        
     elif algorithm == "Generative_Replay":
         if scenario == "Generalization_worst" or scenario == "Generalization_best":
             train_genreplay.train_domain_incremental_model(
