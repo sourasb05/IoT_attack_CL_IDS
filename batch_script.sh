@@ -7,7 +7,7 @@
 #SBATCH -A Berzelius-2025-243
 #SBATCH --reservation=1g.10gb     # Use the MIG reservation
 #SBATCH --gpus=1                   # One MIG GPU in that reservation
-#SBATCH -t 04:00:00                # 3 hours walltime
+#SBATCH -t 05:00:00                # 5 hours walltime
 #SBATCH -n 1
 #SBATCH -c 2                       # MIG slice provides 2 cores
 #SBATCH --mem=32G                  # MIG slice provides ~32 GB RAM

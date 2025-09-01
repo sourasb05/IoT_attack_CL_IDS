@@ -1,33 +1,48 @@
 import torch.nn as nn
+import torch.nn.functional as F
 import torch
 
 # ===========================
 # Define the LSTM Model
 # ===========================
 
+
 class LSTMClassifier(nn.Module):
-    def __init__(self, input_dim, hidden_dim, output_dim, num_layers, fc_hidden_dim):
+    def __init__(self,input_dim, hidden_dim, output_dim, num_layers=1, fc_hidden_dim=64, head_dropout: float = 0.0):
         super(LSTMClassifier, self).__init__()
         self.hidden_dim = hidden_dim
         self.num_layers = num_layers
-        self.lstm = nn.LSTM(input_dim, hidden_dim, num_layers, batch_first=True)
+        self.lstm = nn.LSTM(
+            input_size=input_dim,
+            hidden_size=hidden_dim,
+            num_layers=num_layers,
+            batch_first=True
+        )
+
         self.fc1 = nn.Linear(hidden_dim, fc_hidden_dim)
         self.fc2 = nn.Linear(fc_hidden_dim, output_dim)
-        self.loss_train = []
-        self.loss_test = []
-
+        self.dropout = nn.Dropout(head_dropout)
 
     def forward(self, x):
-        h0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).to(x.device)
-        c0 = torch.zeros(self.num_layers, x.size(0), self.hidden_dim).to(x.device)
-        
-        out, _ = self.lstm(x, (h0, c0))
-        out = self.fc1(out[:, -1, :])
-        out = torch.relu(out)  # Activation function for the hidden layer
-        out = self.fc2(out)
-        out = torch.softmax(out,dim = 1)
+        batch_size = x.size(0)
+        device = x.device
 
-        return out
+        h0 = torch.zeros(self.num_layers, batch_size, self.hidden_dim, device=device)
+        c0 = torch.zeros(self.num_layers, batch_size, self.hidden_dim, device=device)
+
+        out, (h_n, c_n) = self.lstm(x, (h0, c0))   # out: (B, T, H)
+
+        # Take last time step
+        feat = out[:, -1, :]                        # (B, H)
+
+        # Two-layer head
+        feat = F.relu(self.fc1(feat))
+        feat = self.dropout(feat)
+        logits = self.fc2(feat)                     # raw logits (B, C)
+
+        return logits, (h_n, c_n)
+        
+
 
 class LSTMModel(nn.Module):
     def __init__(self, input_size, hidden_size, output_size, num_layers=1, dropout=0.0, bidirectional=False):

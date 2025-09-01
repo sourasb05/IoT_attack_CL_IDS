@@ -276,6 +276,11 @@ def _sync(device):
     elif device.type == "mps":
         torch.mps.synchronize()
 
+def confidence_from_logits(logits: torch.Tensor):
+    probs = torch.softmax(logits, dim=1)     # (B, C)
+    confs, preds = probs.max(dim=1)          # (B,), (B,)
+    return probs, preds, confs
+
 
 def parse_args():
     parser = argparse.ArgumentParser(description="Training script with W&B logging")
@@ -291,7 +296,7 @@ def parse_args():
     # Model parameters
     parser.add_argument("--learning_rate", type=float, default=0.001,
                         help="Learning rate for the optimizer")
-    parser.add_argument("--architecture", type=str, default="LSTM_Attention", 
+    parser.add_argument("--architecture", type=str, default="LSTM", 
                         help="Model architecture to use (e.g., LSTM, BiLSTM, LSTM_Attention, BiLSTM_Attention, LSTM_Attention_adapter)")
     
     parser.add_argument("--epochs", type=int, default=3, 

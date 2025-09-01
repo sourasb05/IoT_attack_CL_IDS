@@ -34,7 +34,7 @@ class EWC:
 
     def _compute_fisher(self, dataloader, n_samples=None):
         fisher = {n: torch.zeros_like(p, device=self.device) for n, p in self.params.items()}
-        self.model.eval()
+        self.model.train()
         criterion = nn.CrossEntropyLoss()
 
         count = 0
@@ -252,6 +252,7 @@ def tdim_ewc_random(args, run_wandb, train_domain_loader, test_domain_loader, de
         # print(f"No improvement for {train_domain}. Model not saved.")
 
         # Create EWC object for this domain and append to list
+        model.train()
         ewc_data_loader = train_domain_loader[train_domain]
         ewc_instance = EWC(model, ewc_data_loader, device, lambda_=900, fisher_n_samples=None)
         ewc_list.append(ewc_instance)

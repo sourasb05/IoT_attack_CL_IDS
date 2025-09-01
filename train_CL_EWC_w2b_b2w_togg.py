@@ -37,7 +37,7 @@ class EWC:
 
     def _compute_fisher(self, dataloader, n_samples=None):
         fisher = {n: torch.zeros_like(p, device=self.device) for n, p in self.params.items()}
-        self.model.eval()
+        self.model.train()
         criterion = nn.CrossEntropyLoss()
 
         count = 0
@@ -258,6 +258,7 @@ def tdim_ewc(args, run_wandb, train_domain_loader, test_domain_loader, device,
         # print(f"No improvement for {train_domain}. Model not saved.")
 
         # Create EWC object for this domain and append to list
+        model.train()
         ewc_data_loader = train_domain_loader[train_domain]
         ewc_instance = EWC(model, ewc_data_loader, device, lambda_=900, fisher_n_samples=None)
         ewc_list.append(ewc_instance)
@@ -354,17 +355,4 @@ def tdim_ewc(args, run_wandb, train_domain_loader, test_domain_loader, device,
 
     run_wandb.summary["BWT/list"] =  bwt_values
     run_wandb.summary["FWT/list"] =  fwt_values
-
-
-    tbl1 = wandb.Table(columns=["domain", "FWT"])
-    for dom in train_domain_order:
-        tbl1.add_data(dom,  fwt_dict.get(dom, None))
-    run_wandb.log({"fwt_metrics": tbl1})
-    
-
-    tbl2 = wandb.Table(columns=["domain", "BWT"])
-    for dom in train_domain_order:
-        tbl2.add_data(dom,  bwt_values_dict.get(dom, None))
-    run_wandb.log({"bwt_metrics": tbl2})
-    
     
