@@ -3,11 +3,13 @@ import models as models
 import train_CL as train_WCL
 import train_WCL_w2b_b2w_togg as train_WCL_w2b_b2w_togg
 import train_CL_EWC_w2b_b2w_togg as EWC_w2b_b2w_togg
+# import train_CL_LwF_w2b_b2w_togg as LwF_w2b_b2w_togg
 import train_WCL_b2w as train_WCL_b2w
 import train_CL_SI as train_si
 import train_CL_EWC as train_ewc
 import train_CL_EWC_ZS as train_ewc_zs
 import train_CL_genreplay as train_genreplay
+import train_CL_LWF as train_lwf
 from utils import cluster_domains  
 import numpy as np
 from tqdm import trange
@@ -174,22 +176,23 @@ def main():
         else:
             raise ValueError(f"Unknown scenario for EWC algorithm: {scenario}")
         
-    elif algorithm == "Generative_Replay":
-        if scenario == "Generalization_worst" or scenario == "Generalization_best":
-            train_genreplay.train_domain_incremental_model(
-            scenario,
-            device,
-            exp_no,
-            train_domains_loader,
-            test_domains_loader,
-            full_domains_loader,
-            model,
-            num_epochs=50,
-            learning_rate=0.001,
-            patience=10,
-            forgetting_threshold=0.01
-        )
+    elif algorithm == "LwF":
+        if scenario == "random":
+            train_lwf.tdim_lwf_random(args, run_wandb, train_domains_loader, test_domains_loader, device,
+                                        model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience,
+                                        alpha=args.alpha, T=args.temperature, warmup_epochs=args.warmup_epochs, enc_lr_scale=args.enc_lr_scale,
+                                        weight_decay=args.weight_decay)
+        elif scenario in ["w2b","b2w","toggle"]:
+            lwf_w2b_b2w_togg.tdim_lwf(args, run_wandb, train_domains_loader, test_domains_loader, device,
+                                        model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience)
         
+    elif algorithm == "Generative_Replay":
+        if scenario == "random":
+            train_genreplay.tdim_gr_random(args, run_wandb, train_domains_loader, test_domains_loader, device, model, exp_no,
+                                        num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience,
+                                        vae_hidden=64, vae_latent=32, window_size=args.window_size, num_features=args.input_size,
+                                        vae_epochs=5, vae_lr=1e-3, replay_samples_per_epoch=500, replay_ratio=0.5, 
+                                        use_teacher_labels=True)
             
 if __name__ == "__main__":
     main()

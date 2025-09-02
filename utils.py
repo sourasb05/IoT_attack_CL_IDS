@@ -301,9 +301,9 @@ def parse_args():
     
     parser.add_argument("--epochs", type=int, default=3, 
                         help="Number of epochs to train the model")
-    parser.add_argument("--algorithm", type=str, default="EWC",
-                        help="Algorithm to use for continual learning (e.g., EWC, EWC_ZS, genreplay, SI, WCL)")
-    parser.add_argument("--scenario", type=str, default="b2w",
+    parser.add_argument("--algorithm", type=str, default="LwF",
+                        help="Algorithm to use for continual learning (e.g., EWC, EWC_ZS, gen_replay, SI, LwF, WCL)")
+    parser.add_argument("--scenario", type=str, default="random",
                         help="Scenario for training (e.g., random, b2w, w2b, clustered, toggle)")
     parser.add_argument("--exp_no", type=int, default=1,
                         help="Experiment number for logging")
@@ -321,13 +321,43 @@ def parse_args():
                         help="Output size for the model (number of classes)")
     parser.add_argument("--num_layers", type=int, default=1,
                         help="Number of layers in the model")
-    parser.add_argument("--dropout", type=float, default=0.05,
+    parser.add_argument("--dropout", type=float, default=0.3,
                         help="Dropout rate for the model")
+    # Distillation-related
+    parser.add_argument("--alpha", type=float, default=0.5,
+    help="Weight for the KD (distillation) loss. "
+         "0 = no distillation (pure CE on new domain). "
+         "Higher values preserve old knowledge but may reduce plasticity. "
+         "Typical range: 0.3–1.0.")
+
+    parser.add_argument("--temperature", type=float, default=4.0,
+    help="Softmax temperature for distillation. "
+         "Higher T produces softer probability distributions, revealing 'dark knowledge'. "
+         "Gradients are rescaled with Hinton's T^2 trick. "
+         "Typical range: 2.0–5.0.")
+    
+    parser.add_argument("--enc_lr_scale", type=float, default=0.5,
+    help="Scaling factor for encoder (LSTM) learning rate relative to classifier head. "
+         "Keeps the encoder more stable while the head adapts faster. "
+         "Typical range: 0.3–0.7.")
+    
+    parser.add_argument("--warmup_epochs", type=int, default=3,
+    help="Number of warm-up epochs where only the classifier head (fc1/fc2) is trained, "
+         "with the LSTM encoder frozen. Helps stabilize new domain adaptation. "
+         "Typical range: 2–5.")
+    
+    parser.add_argument("--weight_decay", type=float, default=0.0,
+    help="Weight decay (L2 regularization) for AdamW optimizer. "
+         "Used to reduce overfitting; often set small or zero in continual learning. "
+         "Typical range: 0 – 1e-4.")
+    
+
     parser.add_argument("--bidirectional", action='store_true',
                         help="Use bidirectional LSTM if set")
     parser.add_argument("--patience", type=int, default=2,
                         help="Patience for early stopping")
     parser.add_argument("--forgetting_threshold", type=float, default=0.01,
                         help="Threshold for detecting catastrophic forgetting")
+    
     
     return parser.parse_args()

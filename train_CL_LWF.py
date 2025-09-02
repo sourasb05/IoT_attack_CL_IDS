@@ -1,4 +1,3 @@
-
 import torch
 import os
 import time
@@ -26,10 +25,8 @@ def kd_loss(student_logits, teacher_logits, T=2.0):
     Returns a scalar tensor.
     """
     import torch.nn.functional as F
-    # Ensure both are logits
     s_log_prob = F.log_softmax(student_logits / T, dim=1)
     t_prob     = F.softmax(teacher_logits / T, dim=1)
-    # KLDiv expects log-prob from student, prob from teacher
     return F.kl_div(s_log_prob, t_prob, reduction="batchmean") * (T ** 2)
 
 def make_frozen_teacher(model):
@@ -40,20 +37,59 @@ def make_frozen_teacher(model):
     teacher.eval()
     return teacher
 
+def _freeze_encoder_unfreeze_head_single_head(model):
+    """
+    For LSTMClassifier: freeze 'lstm' (encoder), unfreeze 'fc1'/'fc2' (head).
+    Adjust if your layer names differ.
+    """
+    for n, p in model.named_parameters():
+        if n.startswith("lstm"):
+            p.requires_grad_(False)
+        else:
+            p.requires_grad_(True)
+
+def _unfreeze_all(model):
+    for p in model.parameters():
+        p.requires_grad_(True)
+
+def _build_optimizer_param_groups(model, base_lr=1e-3, enc_lr_scale=0.5, weight_decay=0.0):
+    """
+    Two param groups: lower LR for encoder (lstm), base LR for head (fc1/fc2).
+    """
+    enc_params, head_params = [], []
+    for n, p in model.named_parameters():
+        if not p.requires_grad:
+            continue
+        (enc_params if n.startswith("lstm") else head_params).append(p)
+    # Fallback if names differ: if either group ends up empty, just use all params
+    if len(enc_params) == 0 or len(head_params) == 0:
+        return optim.AdamW(model.parameters(), lr=base_lr, weight_decay=weight_decay)
+
+    return optim.AdamW(
+        [
+            {"params": enc_params, "lr": base_lr * enc_lr_scale},
+            {"params": head_params, "lr": base_lr},
+        ],
+        lr=base_lr,
+        weight_decay=weight_decay
+    )
+
 # ===================================
 # Main Training Function with LwF
 # ===================================
-def tdim_lwf_random(args, run_wandb, train_domain_loader, test_domain_loader, device,
-                    model, exp_no, num_epochs=500, learning_rate=0.01, patience=3,
-                    alpha=0.5, T=2.0):
+def tdim_lwf_random(
+    args, run_wandb, train_domain_loader, test_domain_loader, device,
+    model, exp_no, num_epochs=500, learning_rate=0.01, patience=3,
+    alpha=0.5, T=2.0, warmup_epochs=3, enc_lr_scale=0.5, weight_decay=0.0
+):
     """
-    Continual/domain-incremental training using Learning without Forgetting (LwF).
+    Continual/domain-incremental training using Learning without Forgetting (LwF) for a single-head model.
     - For each domain, create a frozen teacher = copy(model_before_training_domain).
-    - Train student on current domain with CE(new labels) + alpha * KD(student, teacher).
-    - On the first domain (no prior knowledge), KD term is skipped.
+    - Warm-up: freeze encoder (LSTM) and train head (fc1/fc2) with CE only.
+    - Joint phase: train all params with CE(new labels) + alpha * KD(student, teacher).
+    - On the first domain (no prior knowledge), KD term is skipped (teacher=None).
     """
     criterion = nn.CrossEntropyLoss()
-    optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
 
     performance_stability  = {test_domain: [] for test_domain in test_domain_loader.keys()}
     performance_plasticity = {test_domain: [] for test_domain in test_domain_loader.keys()}
@@ -67,10 +103,11 @@ def tdim_lwf_random(args, run_wandb, train_domain_loader, test_domain_loader, de
     run_wandb.config.update({
         "batch_size": args.batch_size,
         "Loss Function": "CrossEntropyLoss + LwF",
-        "optimizer": "AdamW",
+        "optimizer": "AdamW (param groups: enc {:.2f}x)".format(enc_lr_scale),
         "alpha_lwf": float(alpha),
         "temperature": float(T),
-        "weight_decay": 0.0,
+        "weight_decay": float(weight_decay),
+        "warmup_epochs": int(warmup_epochs),
         "train_domains": train_order
     })
     run_wandb.watch(model, criterion=criterion, log="all", log_freq=50)
@@ -105,7 +142,6 @@ def tdim_lwf_random(args, run_wandb, train_domain_loader, test_domain_loader, de
 
         # Make frozen teacher BEFORE learning the new domain
         if best_model_state is not None:
-            # Teacher is the best model after previous domain
             temp_model = deepcopy(model)
             temp_model.load_state_dict(best_model_state)
             teacher = make_frozen_teacher(temp_model)
@@ -118,6 +154,35 @@ def tdim_lwf_random(args, run_wandb, train_domain_loader, test_domain_loader, de
         _sync(device)
         t0 = time.perf_counter()
 
+        # -----------------------------
+        # Warm-up: train head only (CE)
+        # -----------------------------
+        _freeze_encoder_unfreeze_head_single_head(model)
+        warm_opt = optim.AdamW(filter(lambda p: p.requires_grad, model.parameters()), lr=learning_rate, weight_decay=weight_decay)
+        model.train()
+        for we in range(max(0, warmup_epochs)):
+            warm_epoch_loss = 0.0
+            i = -1
+            for i, (Xb, yb) in enumerate(train_domain_loader[train_domain]):
+                Xb, yb = Xb.to(device), yb.to(device).long()
+                logits, _ = model(Xb) if args.architecture != "LSTM_Attention_adapter" else model(Xb, domain_id=domain_id)
+                ce = criterion(logits, yb)
+                warm_opt.zero_grad()
+                ce.backward()
+                clip_grad_norm_(model.parameters(), max_norm=1.0)
+                warm_opt.step()
+                warm_epoch_loss += float(ce.item())
+            warm_epoch_loss /= (i + 1) if i >= 0 else 1
+            run_wandb.log({f"{train_domain}/warmup_loss": float(warm_epoch_loss), f"{train_domain}/epoch": domain_epoch})
+            logging.info(f"[{train_domain}] Warm-up Epoch {we+1}/{warmup_epochs} | CE: {warm_epoch_loss:.4f}")
+        _sync(device)
+
+        # ------------------------------------
+        # Joint phase: unfreeze all, CE + α·KD
+        # ------------------------------------
+        _unfreeze_all(model)
+        optimizer = _build_optimizer_param_groups(model, base_lr=learning_rate, enc_lr_scale=enc_lr_scale, weight_decay=weight_decay)
+
         for epoch in trange(num_epochs, desc="training Epochs"):
             model.train()
             domain_epoch += 1
@@ -126,7 +191,7 @@ def tdim_lwf_random(args, run_wandb, train_domain_loader, test_domain_loader, de
             i = -1
 
             for i, (X_batch, y_batch) in enumerate(train_domain_loader[train_domain]):
-                X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+                X_batch, y_batch = X_batch.to(device), y_batch.to(device).long()
 
                 optimizer.zero_grad()
                 # Student forward
@@ -146,7 +211,7 @@ def tdim_lwf_random(args, run_wandb, train_domain_loader, test_domain_loader, de
                         teacher_logits = None
 
                 # CE loss on current domain labels
-                ce = criterion(student_logits, y_batch.long())
+                ce = criterion(student_logits, y_batch)
 
                 # KD loss against the frozen teacher, if present
                 if teacher_logits is not None:
@@ -177,15 +242,16 @@ def tdim_lwf_random(args, run_wandb, train_domain_loader, test_domain_loader, de
             test_loss = 0.0
             with torch.no_grad():
                 for X_batch, y_batch in test_domain_loader[train_domain]:
-                    X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+                    X_batch, y_batch = X_batch.to(device), y_batch.to(device).long()
                     if args.architecture == "LSTM_Attention_adapter":
                         outputs, _ = model(X_batch, domain_id=domain_id)
                     else:
                         outputs, _ = model(X_batch)
-                    loss_val = criterion(outputs, y_batch.long())
+                    loss_val = criterion(outputs, y_batch)
                     _, predicted = torch.max(outputs.data, 1)
                     all_y_true.extend(y_batch.cpu().numpy())
                     all_y_pred.extend(predicted.cpu().numpy())
+                    # assumes binary classification -> probs for class 1
                     all_y_prob.extend(torch.nn.functional.softmax(outputs, dim=1)[:, 1].cpu().numpy())
                     test_loss += float(loss_val.item())
             test_loss /= max(1, len(test_domain_loader[train_domain]))
@@ -269,9 +335,9 @@ def tdim_lwf_random(args, run_wandb, train_domain_loader, test_domain_loader, de
     logging.info(f"====== Final Metrics after training on all domains ======")
     bwt_values, bwt_dict, bwt_values_dict = result_utils.compute_BWT(performance_stability, train_order)
     fwt_values, fwt_dict = result_utils.compute_FWT(performance_plasticity, train_order)
-    logging.info(f"\\n BWT: {bwt_values}")
-    logging.info(f"\\n BWT of all previous domain corresponding to the training domain: {bwt_values_dict}")
-    logging.info(f"\\n BWT per domain: {bwt_dict}")
+    logging.info(f"\n BWT: {bwt_values}")
+    logging.info(f"\n BWT of all previous domain corresponding to the training domain: {bwt_values_dict}")
+    logging.info(f"\n BWT per domain: {bwt_dict}")
     logging.info(f"FWT: {fwt_values}")
     logging.info(f"FWT per domain: {fwt_dict}")
 
@@ -286,18 +352,8 @@ def tdim_lwf_random(args, run_wandb, train_domain_loader, test_domain_loader, de
         "train_domain_order": train_order,
         "domain_training_cost": domain_training_cost,
     }
-    save_results_as_json(results_to_save, filename=f"{exp_no}_experiment_results_{args.architecture}_{args.algorithm}_{args.scenario}.json")
+    save_results_as_json(results_to_save, filename=f"{exp_no}_experiment_results_{args.architecture}_{args.algorithm}_{args.scenario}_alpha_{alpha}_T_{T}.json")
     logging.info("Final training complete. Results saved.")
 
     run_wandb.summary["BWT/list"] =  bwt_values
     run_wandb.summary["FWT/list"] =  fwt_values
-
-    tbl1 = wandb.Table(columns=["domain", "FWT"])
-    for dom in train_order:
-        tbl1.add_data(dom,  fwt_dict.get(dom, None))
-    run_wandb.log({"fwt_metrics": tbl1})
-
-    tbl2 = wandb.Table(columns=["domain", "BWT"])
-    for dom in train_order:
-        tbl2.add_data(dom,  bwt_values_dict.get(dom, None))
-    run_wandb.log({"bwt_metrics": tbl2})
