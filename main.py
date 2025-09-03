@@ -20,9 +20,24 @@ import wandb
 import sys
 import logging
 import datetime
+from types import SimpleNamespace
+
+class NoOpWandbRun:
+    def __init__(self):
+        # config.update(...) should not crash
+        self.config = SimpleNamespace(update=lambda *a, **k: None)
+        # summary acts like a dict
+        self.summary = {}
+    def log(self, *a, **k): pass
+    def watch(self, *a, **k): pass
+    def define_metric(self, *a, **k): pass
+    def finish(self): pass
 
 def main():
     args = utils.parse_args()
+    if not args.use_wandb:
+        os.environ["WANDB_DISABLED"] = "true"  # prevents accidental init
+
     #gpu = args.gpu
     #device = torch.device("cuda:{}".format(gpu) if torch.cuda.is_available() and gpu != -1 else "cpu")
     #print("device :",device)
@@ -30,30 +45,33 @@ def main():
     # Wandb Setup
     # ----------------------------
     # Start a new wandb run to track this script.
-    run_wandb = wandb.init(
-    # Set the wandb entity where your project will be logged (generally your team name).
-    entity=args.entity,
-    # Set the wandb project where this run will be logged.
-    project=args.project,
-    # Track hyperparameters and run metadata.
-    config={
-        "learning_rate": args.learning_rate,
-        "architecture": args.architecture,
-        "dataset": "vinnova_attack_dataset",
-        "epochs": args.epochs,
-        "algorithm": args.algorithm,
-        "scenario": args.scenario,
-        "exp_no": args.exp_no,
-        "window_size": args.window_size,
-        "step_size": args.step_size,
-        "input_size": args.input_size,
-        "hidden_size": args.hidden_size,
-        "output_size": args.output_size,
-        "num_layers": args.num_layers,
-        "dropout": args.dropout,
-        "bidirectional": args.bidirectional
-    },
-)
+    if args.use_wandb:
+        run_wandb = wandb.init(
+        # Set the wandb entity where your project will be logged (generally your team name).
+        entity=args.entity,
+        # Set the wandb project where this run will be logged.
+        project=args.project,
+        # Track hyperparameters and run metadata.
+        config={
+            "learning_rate": args.learning_rate,
+            "architecture": args.architecture,
+            "dataset": "vinnova_attack_dataset",
+            "epochs": args.epochs,
+            "algorithm": args.algorithm,
+            "scenario": args.scenario,
+            "exp_no": args.exp_no,
+            "window_size": args.window_size,
+            "step_size": args.step_size,
+            "input_size": args.input_size,
+            "hidden_size": args.hidden_size,
+            "output_size": args.output_size,
+            "num_layers": args.num_layers,
+            "dropout": args.dropout,
+            "bidirectional": args.bidirectional
+        },
+    )
+    else:
+        run_wandb = NoOpWandbRun()
     # ----------------------------
     # 0. Device Setup (MPS/CUDA/CPU)
     # ----------------------------
@@ -109,7 +127,6 @@ def main():
     full_domains_loader = {}
 
     for key, files in domains.items():
-
         train_domains_loader[key], test_domains_loader[key] = utils.load_data(domains_path, key, files, window_size=args.window_size, step_size=args.step_size, batch_size=args.batch_size)
           
     input_size = 140
@@ -186,13 +203,15 @@ def main():
             lwf_w2b_b2w_togg.tdim_lwf(args, run_wandb, train_domains_loader, test_domains_loader, device,
                                         model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience)
         
-    elif algorithm == "Generative_Replay":
+    elif algorithm == "GR":
         if scenario == "random":
             train_genreplay.tdim_gr_random(args, run_wandb, train_domains_loader, test_domains_loader, device, model, exp_no,
                                         num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience,
-                                        vae_hidden=64, vae_latent=32, window_size=args.window_size, num_features=args.input_size,
-                                        vae_epochs=5, vae_lr=1e-3, replay_samples_per_epoch=500, replay_ratio=0.5, 
+                                        vae_hidden=64, vae_latent=32, window_size=1, num_features=args.input_size,
+                                        vae_epochs=100, vae_lr=1e-3, replay_samples_per_epoch=1000, replay_ratio=0.5, 
                                         use_teacher_labels=True)
             
+    run_wandb.finish()
+
 if __name__ == "__main__":
     main()

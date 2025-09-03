@@ -7,7 +7,7 @@ declare -a EXTRA_FLAGS=()   # default empty; e.g. EXTRA_FLAGS=(--bidirectional)
 PROJECT="attack_CL"
 ENTITY="sourasb05"
 ARCH="LSTM"
-ALGO="LwF"
+ALGO="GR"
 SCENARIO="random"
 LR=0.001
 EPOCHS=100

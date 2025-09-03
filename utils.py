@@ -130,19 +130,7 @@ def load_data(domain_path, key, domain_dataset, window_size=10, step_size=3, bat
     seq_train = pd.concat(seq_train_parts, ignore_index=True)
     seq_test  = pd.concat(seq_test_parts,  ignore_index=True)
 
-    """print("After seq_maker, train size:", len(seq_train), "test size:", len(seq_test))
-    print("Class distribution in train:", seq_train['label'].value_counts().to_dict())
-    print("Class distribution in test :", seq_test['label'].value_counts().to_dict())
-    print("Feature columns:", seq_train.columns[:-1].tolist())
-    print("Label column  :", seq_train.columns[-1])
-    print("Any NaNs in train features?", seq_train.iloc[:, :-1].isna().any().any())
-    print("Any NaNs in test features ?", seq_test.iloc[:,  :-1].isna().any().any())
-    print("Any NaNs in train labels  ?", seq_train['label'].isna().any())
-    print("Any NaNs in test labels   ?", seq_test['label'].isna().any())
-    print("First few rows of train data:\n", seq_train.head())
-    print("First few rows of test data:\n",  seq_test.head())
-    print("Train feature stats:\n", seq_train.iloc[:, :-1].describe())
-    """
+
     # -----------------------
     # Tensors & Dataloaders
     # -----------------------
@@ -157,6 +145,9 @@ def load_data(domain_path, key, domain_dataset, window_size=10, step_size=3, bat
     feature_dim = X_train.shape[1]  # (#features * SEQUENCE_LENGTH)
     X_train = X_train.view(-1, 1, feature_dim)
     X_test  = X_test.view(-1, 1, feature_dim)
+    
+    # print(f"After view: X_train={X_train.shape}, X_test={X_test.shape}")
+
 
     train_dataset = TensorDataset(X_train, y_train)
     test_dataset  = TensorDataset(X_test,  y_test)
@@ -175,36 +166,12 @@ def create_domains(domains_path):
         # Iterate over each item in the source folder.
     domains = {}
     for domain  in os.listdir(domains_path):
-        #if domain in [ "blackhole_var5_base", "blackhole_var5_oo", "blackhole_var5_dec",
-        #              "blackhole_var10_base", "blackhole_var10_oo", "blackhole_var10_dec",
-        #              "blackhole_var15_base", "blackhole_var15_oo", "blackhole_var15_dec",
-        #             "blackhole_var20_base", "blackhole_var20_oo", "blackhole_var20_dec",
-        #]:
-        #    continue
-        # print(f"domain : {domain}")
+        
         domain_path = os.path.join(domains_path, domain)
-        # print(f"domain_path : {domain_path}")
-        # Check if the item is a directory (subfolder).
+        
         if os.path.isdir(domain_path):
-            # print(f"Processing subfolder: {domain}")
-            # List and sort all files in this subfolder.
             files = sorted(os.listdir(domain_path))
-            # Select at most the first 10 files.
             selected_files = files
-            
-            """file_contents = []
-            # Read the contents of each selected file.
-            for file_name in selected_files:
-                file_path = os.path.join(domain_path, file_name)
-                # Ensure that the path refers to a file.
-                if os.path.isfile(file_path):
-                    try:
-                        with open(file_path, 'r') as f:
-                            content = f.read()
-                        file_contents.append(content)
-                    except Exception as e:
-                        print(f"Error reading {file_path}: {e}")
-            """
            # Use the subfolder name as the dictionary key and its list of file contents as the value.
             domains[domain] = selected_files
     logging.info(f"Domains found: {domains.keys()}")
@@ -301,8 +268,8 @@ def parse_args():
     
     parser.add_argument("--epochs", type=int, default=3, 
                         help="Number of epochs to train the model")
-    parser.add_argument("--algorithm", type=str, default="LwF",
-                        help="Algorithm to use for continual learning (e.g., EWC, EWC_ZS, gen_replay, SI, LwF, WCL)")
+    parser.add_argument("--algorithm", type=str, default="GR",
+                        help="Algorithm to use for continual learning (e.g., EWC, EWC_ZS, GR, SI, LwF, WCL)")
     parser.add_argument("--scenario", type=str, default="random",
                         help="Scenario for training (e.g., random, b2w, w2b, clustered, toggle)")
     parser.add_argument("--exp_no", type=int, default=1,
@@ -340,24 +307,22 @@ def parse_args():
     help="Scaling factor for encoder (LSTM) learning rate relative to classifier head. "
          "Keeps the encoder more stable while the head adapts faster. "
          "Typical range: 0.3–0.7.")
-    
     parser.add_argument("--warmup_epochs", type=int, default=3,
     help="Number of warm-up epochs where only the classifier head (fc1/fc2) is trained, "
          "with the LSTM encoder frozen. Helps stabilize new domain adaptation. "
          "Typical range: 2–5.")
-    
     parser.add_argument("--weight_decay", type=float, default=0.0,
     help="Weight decay (L2 regularization) for AdamW optimizer. "
          "Used to reduce overfitting; often set small or zero in continual learning. "
          "Typical range: 0 – 1e-4.")
-    
-
     parser.add_argument("--bidirectional", action='store_true',
                         help="Use bidirectional LSTM if set")
     parser.add_argument("--patience", type=int, default=2,
                         help="Patience for early stopping")
     parser.add_argument("--forgetting_threshold", type=float, default=0.01,
                         help="Threshold for detecting catastrophic forgetting")
+    parser.add_argument("--use_wandb", action="store_true", 
+                        help="Enable Weights & Biases logging (disabled by default)")
     
     
     return parser.parse_args()
