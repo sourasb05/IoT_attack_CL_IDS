@@ -129,16 +129,7 @@ def main():
     for key, files in domains.items():
         train_domains_loader[key], test_domains_loader[key] = utils.load_data(domains_path, key, files, window_size=args.window_size, step_size=args.step_size, batch_size=args.batch_size)
           
-    input_size = 140
-    hidden_size = 10
-    output_size = 2
-    num_layers = 3
-    dropout = 0.5
-    # bidirectional = args.bidirectional
-    # hidden_size = 128
-    # output_size = 2
-    # model = models.LSTMModel(input_size, hidden_size, output_size) #.to(device)
-    # model = models.LSTMModel(input_size=input_size, hidden_size=hidden_size, output_size=output_size, num_layers=2, dropout=0.5, bidirectional=True)
+    
     if architecture == "LSTM":
         model = models.LSTMClassifier(input_dim=args.input_size, hidden_dim=args.hidden_size, output_dim=args.output_size, num_layers=args.num_layers, fc_hidden_dim=10).to(device)
     elif architecture == "BiLSTM":
@@ -155,15 +146,58 @@ def main():
     logging.info(f" Experiment No: {exp_no} | Algorithm: {algorithm} | Scenario: {scenario}")
     logging.info(f"Model architecture: {architecture} | Input size: {args.input_size} | Hidden size: {args.hidden_size} | Output size: {args.output_size} | Num layers: {args.num_layers} | Dropout: {args.dropout} | Bidirectional: {args.bidirectional}")
     
+    if scenario == "random":
+        train_domain_order = ["blackhole_var10_base", "blackhole_var10_dec", "blackhole_var10_oo", "blackhole_var15_base",
+        "blackhole_var15_dec", "blackhole_var15_oo", "blackhole_var20_base", "blackhole_var20_dec", "blackhole_var20_oo", "blackhole_var5_base",
+        "blackhole_var5_dec", "blackhole_var5_oo", "disflooding_var10_base", "disflooding_var10_dec", "disflooding_var10_oo", "disflooding_var15_base",
+        "disflooding_var15_dec", "disflooding_var15_oo", "disflooding_var20_base", "disflooding_var20_dec", "disflooding_var20_oo", "disflooding_var5_base",
+        "disflooding_var5_dec", "disflooding_var5_oo", "localrepair_var10_base", "localrepair_var10_dec", "localrepair_var10_oo", "localrepair_var15_base",
+        "localrepair_var15_dec", "localrepair_var15_oo", "localrepair_var20_base", "localrepair_var20_dec", "localrepair_var20_oo", "localrepair_var5_base",
+        "localrepair_var5_dec", "localrepair_var5_oo", "worstparent_var10_base", "worstparent_var10_dec", "worstparent_var10_oo", "worstparent_var15_base",
+        "worstparent_var15_dec", "worstparent_var15_oo", "worstparent_var20_base", "worstparent_var20_dec", "worstparent_var20_oo", "worstparent_var5_base",
+        "worstparent_var5_dec", "worstparent_var5_oo"]
+
+    elif scenario == "w2b":
+        train_domain_order = [ "localrepair_var5_oo", "blackhole_var10_oo", "blackhole_var5_oo", "blackhole_var15_dec", "blackhole_var20_oo", "worstparent_var5_oo",
+        "worstparent_var10_oo", "blackhole_var15_oo", "blackhole_var10_dec", "worstparent_var5_base", "worstparent_var10_base", "localrepair_var15_oo",
+        "localrepair_var10_base", "worstparent_var20_dec", "localrepair_var20_oo", "worstparent_var5_dec", "worstparent_var15_oo", "localrepair_var10_oo",
+        "localrepair_var15_dec", "blackhole_var20_base", "worstparent_var20_oo", "worstparent_var10_dec", "worstparent_var20_base", "worstparent_var15_base",
+        "disflooding_var20_dec", "blackhole_var20_dec", "localrepair_var5_dec", "localrepair_var20_base", "disflooding_var20_base", "blackhole_var15_base",
+        "blackhole_var10_base", "localrepair_var5_base", "localrepair_var10_dec", "blackhole_var5_base", "localrepair_var15_base", "disflooding_var20_oo",
+        "blackhole_var5_dec", "localrepair_var20_dec", "disflooding_var15_oo", "worstparent_var15_dec", "disflooding_var5_base", "disflooding_var10_base",
+        "disflooding_var5_dec", "disflooding_var5_oo", "disflooding_var15_dec", "disflooding_var10_dec", "disflooding_var15_base", "disflooding_var10_oo" ]
+    elif scenario == "b2w":
+        train_domain_order = [ "localrepair_var5_oo", "disflooding_var20_base", "disflooding_var20_oo", "disflooding_var15_oo", "disflooding_var15_base",
+        "disflooding_var20_dec", "disflooding_var15_dec", "disflooding_var10_base", "disflooding_var10_dec", "disflooding_var10_oo", "disflooding_var5_oo",
+        "disflooding_var5_base", "localrepair_var15_dec", "disflooding_var5_dec", "localrepair_var10_dec", "localrepair_var5_dec", "localrepair_var15_oo",
+        "localrepair_var20_dec", "localrepair_var5_base", "localrepair_var20_base", "localrepair_var10_base", "localrepair_var15_base", "worstparent_var20_base",
+        "worstparent_var20_oo", "worstparent_var15_base", "blackhole_var20_dec", "blackhole_var10_dec", "blackhole_var15_base", "localrepair_var10_oo",
+        "localrepair_var20_oo", "worstparent_var15_dec", "worstparent_var10_base", "worstparent_var10_oo", "worstparent_var15_oo", "blackhole_var15_dec",
+        "blackhole_var20_base", "worstparent_var20_dec", "worstparent_var5_base", "worstparent_var10_dec", "blackhole_var5_dec", "blackhole_var5_base",
+        "blackhole_var10_base", "blackhole_var10_oo", "blackhole_var15_oo", "blackhole_var20_oo", "blackhole_var5_oo", "worstparent_var5_dec", "worstparent_var5_oo"
+        ]
+    elif scenario == "toggle":
+        train_domain_order = [ "localrepair_var5_oo", "blackhole_var10_oo", "disflooding_var10_dec", "blackhole_var5_oo", "disflooding_var10_oo",
+        "blackhole_var15_dec", "disflooding_var15_dec", "blackhole_var15_oo", "disflooding_var20_oo", "blackhole_var20_dec", "disflooding_var15_base", 
+        "blackhole_var15_base", "blackhole_var10_dec", "blackhole_var20_oo", "disflooding_var20_dec", "localrepair_var20_base", "localrepair_var15_base",
+        "worstparent_var20_dec", "worstparent_var15_dec", "localrepair_var10_oo", "localrepair_var20_dec", "localrepair_var10_base", "worstparent_var20_oo",
+        "worstparent_var10_base", "worstparent_var15_oo", "worstparent_var5_base", "worstparent_var15_base", "localrepair_var20_oo", "localrepair_var15_oo",
+        "worstparent_var5_dec", "worstparent_var10_dec", "worstparent_var5_oo", "disflooding_var20_base", "blackhole_var20_base", "worstparent_var20_base",
+        "worstparent_var10_oo", "disflooding_var15_oo", "blackhole_var10_base", "disflooding_var5_base", "localrepair_var5_base", "disflooding_var5_dec",
+        "blackhole_var5_base", "disflooding_var5_oo", "localrepair_var15_dec", "disflooding_var10_base", "blackhole_var5_dec", "localrepair_var10_dec",
+        "localrepair_var5_dec"]
+    else:
+        raise ValueError(f"Unknown scenario: {scenario}")
+
     if algorithm == "WCL":  
-        if scenario == "random":
-            train_WCL.tdim_random(args, run_wandb, train_domains_loader, test_domains_loader, device,
-                                        model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience)           
-        elif scenario in ["w2b", "b2w", "toggle"]:
-            train_WCL_w2b_b2w_togg.tdim(args, run_wandb, train_domains_loader, test_domains_loader, device,
-                                        model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience)
-        else:
-            raise ValueError(f"Unknown scenario for WCL algorithm: {scenario}")
+        # if scenario == "random":
+        train_WCL.tdim_random(args, run_wandb, train_domains_loader, test_domains_loader, train_domain_order, device,
+                            model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience)           
+        # elif scenario in ["w2b", "b2w", "toggle"]:
+        #    train_WCL_w2b_b2w_togg.tdim(args, run_wandb, train_domains_loader, test_domains_loader, device,
+        #                                model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience)
+        # else:
+        #    raise ValueError(f"Unknown scenario for WCL algorithm: {scenario}")
         
     
     elif algorithm == "SI":
@@ -172,14 +206,13 @@ def main():
     
     elif algorithm == "EWC":
         # Train using EWC
-        if scenario == "random":
-            train_ewc.tdim_ewc_random(args, run_wandb, train_domains_loader, test_domains_loader, device,
+        train_ewc.tdim_ewc_random(args, run_wandb, train_domains_loader, test_domains_loader, train_domain_order, device,
                                         model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience) 
-        elif scenario in ["w2b","b2w","toggle"]:
-            EWC_w2b_b2w_togg.tdim_ewc(args, run_wandb, train_domains_loader, test_domains_loader, device,
-                                        model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience)
+        # elif scenario in ["w2b","b2w","toggle"]:
+        #    EWC_w2b_b2w_togg.tdim_ewc(args, run_wandb, train_domains_loader, test_domains_loader, device,
+        #                                 model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience)
         
-        elif scenario == "zero_shot":
+        """elif scenario == "zero_shot":
             train_ewc_zs.train_domain_incremental_model(
                     scenario,device,train_domains_loader,test_domains_loader, full_domains_loader, model,
                     num_epochs=args.epochs,
@@ -191,27 +224,26 @@ def main():
                 )
 
         else:
-            raise ValueError(f"Unknown scenario for EWC algorithm: {scenario}")
+            raise ValueError(f"Unknown scenario for EWC algorithm: {scenario}")"""
         
     elif algorithm == "LwF":
-        if scenario == "random":
-            train_lwf.tdim_lwf_random(args, run_wandb, train_domains_loader, test_domains_loader, device,
+            train_lwf.tdim_lwf_random(args, run_wandb, train_domains_loader, test_domains_loader, train_domain_order, device,
                                         model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience,
                                         alpha=args.alpha, T=args.temperature, warmup_epochs=args.warmup_epochs, enc_lr_scale=args.enc_lr_scale,
                                         weight_decay=args.weight_decay)
-        elif scenario in ["w2b","b2w","toggle"]:
-            lwf_w2b_b2w_togg.tdim_lwf(args, run_wandb, train_domains_loader, test_domains_loader, device,
-                                        model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience)
+        # elif scenario in ["w2b","b2w","toggle"]:
+        #    lwf_w2b_b2w_togg.tdim_lwf(args, run_wandb, train_domains_loader, test_domains_loader, device,
+        #                                model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience)
         
     elif algorithm == "GR":
-        if scenario == "random":
-            train_genreplay.tdim_gr_random(args, run_wandb, train_domains_loader, test_domains_loader, device, model, exp_no,
-                                        num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience,
+            train_genreplay.tdim_gr_random(args, run_wandb, train_domains_loader, test_domains_loader, train_domain_order, device, 
+                                        model, exp_no,num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience,
                                         vae_hidden=64, vae_latent=32, window_size=1, num_features=args.input_size,
-                                        vae_epochs=100, vae_lr=1e-3, replay_samples_per_epoch=1000, replay_ratio=0.5, 
+                                        vae_epochs=30, vae_lr=1e-3, replay_samples_per_epoch=1000, replay_ratio=0.5, 
                                         use_teacher_labels=True)
             
     run_wandb.finish()
 
 if __name__ == "__main__":
+
     main()

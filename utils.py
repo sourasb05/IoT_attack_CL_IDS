@@ -268,7 +268,7 @@ def parse_args():
     
     parser.add_argument("--epochs", type=int, default=3, 
                         help="Number of epochs to train the model")
-    parser.add_argument("--algorithm", type=str, default="GR",
+    parser.add_argument("--algorithm", type=str, default="WCL",
                         help="Algorithm to use for continual learning (e.g., EWC, EWC_ZS, GR, SI, LwF, WCL)")
     parser.add_argument("--scenario", type=str, default="random",
                         help="Scenario for training (e.g., random, b2w, w2b, clustered, toggle)")
@@ -323,6 +323,5 @@ def parse_args():
                         help="Threshold for detecting catastrophic forgetting")
     parser.add_argument("--use_wandb", action="store_true", 
                         help="Enable Weights & Biases logging (disabled by default)")
-    
     
     return parser.parse_args()

@@ -78,7 +78,7 @@ def _build_optimizer_param_groups(model, base_lr=1e-3, enc_lr_scale=0.5, weight_
 # Main Training Function with LwF
 # ===================================
 def tdim_lwf_random(
-    args, run_wandb, train_domain_loader, test_domain_loader, device,
+    args, run_wandb, train_domain_loader, test_domain_loader, train_domain_order, device,
     model, exp_no, num_epochs=500, learning_rate=0.01, patience=3,
     alpha=0.5, T=2.0, warmup_epochs=3, enc_lr_scale=0.5, weight_decay=0.0
 ):
@@ -96,8 +96,7 @@ def tdim_lwf_random(
     domain_training_cost   = {test_domain: [] for test_domain in test_domain_loader.keys()}
 
     seen_domain    = set()
-    train_order    = list(train_domain_loader.keys())
-    domain_to_id   = {name: i for i, name in enumerate(train_domain_loader.keys())}
+    domain_to_id = {name: i for i, name in enumerate(train_domain_order)}
 
     # ---- W&B Enrich config for this run -----
     run_wandb.config.update({
@@ -108,18 +107,19 @@ def tdim_lwf_random(
         "temperature": float(T),
         "weight_decay": float(weight_decay),
         "warmup_epochs": int(warmup_epochs),
-        "train_domains": train_order
+        "train_domains": train_domain_order
     })
     run_wandb.watch(model, criterion=criterion, log="all", log_freq=50)
 
     previous_domain   = None
     best_model_state  = None
 
-    for idx, train_domain in enumerate(tqdm(train_order, desc="Train Domains", total=len(train_order))):
+    for idx, train_domain in enumerate(tqdm(train_domain_order, desc="Train Domains", total=len(train_domain_order))):
         domain_id = domain_to_id[train_domain]
         domain_epoch = 0
-        wandb.define_metric(f"{train_domain}/epoch")
-        wandb.define_metric(f"{train_domain}/*", step_metric=f"{train_domain}/epoch")
+        if args.use_wandb:
+            wandb.define_metric(f"{train_domain}/epoch")
+            wandb.define_metric(f"{train_domain}/*", step_metric=f"{train_domain}/epoch")
 
         # Pre-train eval on the upcoming domain (plasticity snapshot)
         logging.info(f"====== Evaluate current domain {train_domain} on model built in previous domain : {previous_domain} ======")
@@ -333,8 +333,8 @@ def tdim_lwf_random(
 
     # Final Metrics: BWT / FWT
     logging.info(f"====== Final Metrics after training on all domains ======")
-    bwt_values, bwt_dict, bwt_values_dict = result_utils.compute_BWT(performance_stability, train_order)
-    fwt_values, fwt_dict = result_utils.compute_FWT(performance_plasticity, train_order)
+    bwt_values, bwt_dict, bwt_values_dict = result_utils.compute_BWT(performance_stability, train_domain_order)
+    fwt_values, fwt_dict = result_utils.compute_FWT(performance_plasticity, train_domain_order)
     logging.info(f"\n BWT: {bwt_values}")
     logging.info(f"\n BWT of all previous domain corresponding to the training domain: {bwt_values_dict}")
     logging.info(f"\n BWT per domain: {bwt_dict}")
@@ -349,7 +349,7 @@ def tdim_lwf_random(
         "BWT_dict": bwt_dict,
         "FWT_values": fwt_values,
         "FWT_dict": fwt_dict,
-        "train_domain_order": train_order,
+        "train_domain_order": train_domain_order,
         "domain_training_cost": domain_training_cost,
     }
     save_results_as_json(results_to_save, filename=f"{exp_no}_experiment_results_{args.architecture}_{args.algorithm}_{args.scenario}_alpha_{alpha}_T_{T}.json")

@@ -113,8 +113,8 @@ def distillation_loss(student_logits, teacher_probs, T=2.0):
 
 
 def tdim_gr_random(
-    args, run_wandb, train_domain_loader, test_domain_loader, device,
-    model, exp_no, num_epochs=500, learning_rate=0.01, patience=3,
+    args, run_wandb, train_domain_loader, test_domain_loader, train_domain_order, device,
+    model, exp_no, num_epochs=10, learning_rate=0.01, patience=3,
     vae_hidden=64, vae_latent=32, window_size=1, num_features=140,
     vae_epochs=5, vae_lr=1e-3,
     replay_samples_per_epoch=0,   # if 0 -> computed from r & real count
@@ -135,8 +135,8 @@ def tdim_gr_random(
     performance_plasticity = {d: [] for d in test_domain_loader.keys()}
     domain_training_cost   = {d: [] for d in test_domain_loader.keys()}
 
-    train_domain_order = list(train_domain_loader.keys())
-    domain_to_id = {name: i for i, name in enumerate(train_domain_loader.keys())}
+    # train_domain_order = list(train_domain_loader.keys())
+    domain_to_id = {name: i for i, name in enumerate(train_domain_order)}
 
     run_wandb.config.update({
         "batch_size": args.batch_size,

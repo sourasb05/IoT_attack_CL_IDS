@@ -7,8 +7,8 @@ declare -a EXTRA_FLAGS=()   # default empty; e.g. EXTRA_FLAGS=(--bidirectional)
 PROJECT="attack_CL"
 ENTITY="sourasb05"
 ARCH="LSTM"
-ALGO="LwF"
-SCENARIO="random"
+ALGO="GR"
+SCENARIO="b2w"
 LR=0.001
 EPOCHS=100
 WINDOW=10
@@ -21,7 +21,7 @@ LAYERS=1
 DROPOUT=0.05
 PATIENCE=50
 FORGET=0.01
-ALPHA=0.5
+ALPHA=1.0
 T=4.0
 ENC_LR=0.5
 WARM_UP=10
@@ -32,7 +32,7 @@ EXTRA_FLAGS=() # (--bidirectional)   # e.g., EXTRA_FLAGS=(--bidirectional)
 
 TS="$(date +%Y%m%d-%H%M%S)"
 
-for i in {1..2}; do
+for i in {1..3}; do
   PAD=$(printf "%02d" "$i")
   RUN_NAME="exp-${PAD}-${TS}"
 

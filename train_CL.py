@@ -4,7 +4,7 @@ import time
 import torch.nn as nn
 import torch.optim as optim
 from torch.nn.utils import clip_grad_norm_
-
+from tqdm import tqdm, trange
 import matplotlib.pyplot as plt
 import numpy as np
 import pandas as pd
@@ -23,7 +23,7 @@ import wandb
 # ===========================
 # Step: Train with Early Stopping, Logging, Model Saving, Catastrophic Forgetting Detection
 # ===========================
-def tdim_random(args, run_wandb, train_domain_loader, test_domain_loader, device,
+def tdim_random(args, run_wandb, train_domain_loader, test_domain_loader, train_domain_order, device,
                                    model, exp_no, num_epochs=500, learning_rate=0.01, patience=3):
     """
     For each training domain, trains the model on that domain (with early stopping using F1).
@@ -41,8 +41,9 @@ def tdim_random(args, run_wandb, train_domain_loader, test_domain_loader, device
     domain_training_cost = {test_domain: [] for test_domain in test_domain_loader.keys()}
 
     seen_domain = set()
-    train_domain_order = list(train_domain_loader.keys())
-    domain_to_id = {name: i for i, name in enumerate(train_domain_loader.keys())}
+    #train_domain_order = list(train_domain_loader.keys())
+    
+    domain_to_id = {name: i for i, name in enumerate(train_domain_order)}
 
     # ---- W&B Enrich config for this run -----
     run_wandb.config.update({
@@ -58,11 +59,12 @@ def tdim_random(args, run_wandb, train_domain_loader, test_domain_loader, device
 
     previous_domain = None
     best_model_state = None  # Initialize best_model_state to avoid unbound errors
-    for idx, train_domain in enumerate(train_domain_loader.keys()):
+    for idx, train_domain in tqdm(enumerate(train_domain_order), desc="Training on domains", total=len(train_domain_order)):
         domain_id = domain_to_id[train_domain]
         domain_epoch = 0
-        wandb.define_metric(f"{train_domain}/epoch")
-        wandb.define_metric(f"{train_domain}/*", step_metric=f"{train_domain}/epoch")
+        if args.use_wandb:
+            wandb.define_metric(f"{train_domain}/epoch")
+            wandb.define_metric(f"{train_domain}/*", step_metric=f"{train_domain}/epoch")
         
         
         logging.info(f"====== Evaluate Current domain {train_domain} on model built in previous domain : {previous_domain} ======")
@@ -95,7 +97,7 @@ def tdim_random(args, run_wandb, train_domain_loader, test_domain_loader, device
 
         # Train for the current domain with early stopping (evaluation on same domain's test set)
         
-        for epoch in range(num_epochs):
+        for epoch in trange(num_epochs, desc=f"Epochs for {train_domain}"):
             model.train()
             domain_epoch +=1
             epoch_start = time.perf_counter()
@@ -265,17 +267,3 @@ def tdim_random(args, run_wandb, train_domain_loader, test_domain_loader, device
 
     run_wandb.summary["BWT/list"] =  bwt_values
     run_wandb.summary["FWT/list"] =  fwt_values
-
-
-    tbl1 = wandb.Table(columns=["domain", "FWT"])
-    for dom in train_domain_order:
-        tbl1.add_data(dom,  fwt_dict.get(dom, None))
-    run_wandb.log({"fwt_metrics": tbl1})
-    
-
-    tbl2 = wandb.Table(columns=["domain", "BWT"])
-    for dom in train_domain_order:
-        tbl2.add_data(dom,  bwt_values_dict.get(dom, None))
-    run_wandb.log({"bwt_metrics": tbl2})
-    
-    

@@ -7,8 +7,8 @@ declare -a EXTRA_FLAGS=()   # default empty; e.g. EXTRA_FLAGS=(--bidirectional)
 PROJECT="attack_CL"
 ENTITY="sourasb05"
 ARCH="LSTM"
-ALGO="EWC"
-SCENARIO="random"
+ALGO="GR"
+SCENARIO="toggle"
 LR=0.001
 EPOCHS=100
 WINDOW=10
@@ -32,7 +32,7 @@ EXTRA_FLAGS=() # (--bidirectional)   # e.g., EXTRA_FLAGS=(--bidirectional)
 
 TS="$(date +%Y%m%d-%H%M%S)"
 
-for i in {1..2}; do
+for i in {1..3}; do
   PAD=$(printf "%02d" "$i")
   RUN_NAME="exp-${PAD}-${TS}"
 
@@ -63,7 +63,6 @@ for i in {1..2}; do
     --enc_lr_scale "$ENC_LR"
     --warmup_epochs "$WARM_UP"
     --weight_decay "$DECAY"
-    --use_wandb 
   )
   # append optional flags safely
   # ARGS+=("${EXTRA_FLAGS[@]:-}")
