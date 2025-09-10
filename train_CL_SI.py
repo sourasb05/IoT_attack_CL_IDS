@@ -21,9 +21,7 @@ import wandb
 # ===================================
 # Synaptic Intelligence Class
 # ===================================
-# ===================================
-# Synaptic Intelligence (SI)
-# ===================================
+
 class SynapticIntelligence:
     """
     Implements SI (Zenke, Poole, Ganguli, ICML'17).
