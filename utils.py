@@ -53,7 +53,7 @@ def extract_index(path):
 DROP_COLS = ["Unnamed: 0"]
 def load_csv(path):
     
-    df = pd.read_csv(path)
+    df = pd.read_csv(path, encoding="utf-8", encoding_errors="ignore")
     for c in DROP_COLS:
         if c in df.columns:
             df = df.drop(columns=[c])
@@ -207,7 +207,7 @@ def cluster_domains(base_path, distance_threshold=2.0):
     scaler = StandardScaler()
     domain_features = {}
     for domain, path in domain_paths.items():
-        df = pd.read_csv(path)
+        df = pd.read_csv(path, encoding="utf-8", encoding_errors="ignore")
         X = df.drop(columns=['label'], errors='ignore').values
         X_scaled = scaler.fit_transform(X)
         domain_features[domain] = X_scaled
