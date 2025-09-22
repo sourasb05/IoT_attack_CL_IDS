@@ -3,6 +3,7 @@ import models as models
 import train_CL as train_WCL
 import train_WCL_w2b_b2w_togg as train_WCL_w2b_b2w_togg
 import train_CL_EWC_w2b_b2w_togg as EWC_w2b_b2w_togg
+import tdim_replay as tdim_replay
 # import train_CL_LwF_w2b_b2w_togg as LwF_w2b_b2w_togg
 import train_WCL_b2w as train_WCL_b2w
 import train_CL_SI as train_si
@@ -242,6 +243,12 @@ def main():
                                         vae_epochs=30, vae_lr=1e-3, replay_samples_per_epoch=1000, replay_ratio=0.5, 
                                         use_teacher_labels=True)
             
+    elif algorithm == "Replay":
+            tdim_replay.tdim_replay( args, run_wandb, train_domains_loader, test_domains_loader, device,model, exp_no, num_epochs=args.epochs,
+                                    learning_rate=args.learning_rate, patience=args.patience, replay_total_capacity=args.memory_size, 
+                                    replay_per_domain_cap=250, replay_batch_size=128, replay_ratio=0.5, replay_seen_only=True)
+            
+    
     run_wandb.finish()
 
 if __name__ == "__main__":

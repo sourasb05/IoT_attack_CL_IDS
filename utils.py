@@ -13,7 +13,7 @@ import logging
 import argparse
 import sys
 import re
-
+import wandb
 
 def safe_minmax_normalize(df, global_min, global_max, label_col="label"):
     feat_cols = [c for c in df.columns if c != label_col]
@@ -268,8 +268,8 @@ def parse_args():
     
     parser.add_argument("--epochs", type=int, default=3, 
                         help="Number of epochs to train the model")
-    parser.add_argument("--algorithm", type=str, default="WCL",
-                        help="Algorithm to use for continual learning (e.g., EWC, EWC_ZS, GR, SI, LwF, WCL)")
+    parser.add_argument("--algorithm", type=str, default="Replay",
+                        help="Algorithm to use for continual learning (e.g., EWC, EWC_ZS, GR, SI, LwF, WCL, Replay)")
     parser.add_argument("--scenario", type=str, default="random",
                         help="Scenario for training (e.g., random, b2w, w2b, clustered, toggle)")
     parser.add_argument("--exp_no", type=int, default=1,
@@ -323,5 +323,22 @@ def parse_args():
                         help="Threshold for detecting catastrophic forgetting")
     parser.add_argument("--use_wandb", action="store_true", 
                         help="Enable Weights & Biases logging (disabled by default)")
+    
+    ## Replay-specific
+
+    parser.add_argument("--memory_size", type=int, default=2000,
+    help="Total number of exemplars stored across all domains (global replay buffer capacity).")
+
+    parser.add_argument("--per_domain_cap", type=int, default=250,
+    help="Maximum number of exemplars stored per domain. Reservoir sampling used if exceeded.")
+
+    parser.add_argument("--replay_batch_size", type=int, default=128,
+    help="Batch size sampled from replay buffer per training step (before mixing with current batch).")
+
+    parser.add_argument("--replay_ratio", type=float, default=0.5,
+    help="Fraction of each training batch replaced by replay samples (0.0 = no replay, 1.0 = only replay).")
+
+    parser.add_argument("--replay_seen_only", action="store_true",
+    help="If set, sample replay only from already seen domains (default). If not set, allow all domains.")
     
     return parser.parse_args()
