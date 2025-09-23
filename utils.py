@@ -268,7 +268,7 @@ def parse_args():
     
     parser.add_argument("--epochs", type=int, default=3, 
                         help="Number of epochs to train the model")
-    parser.add_argument("--algorithm", type=str, default="Replay",
+    parser.add_argument("--algorithm", type=str, default="SI",
                         help="Algorithm to use for continual learning (e.g., EWC, EWC_ZS, GR, SI, LwF, WCL, Replay)")
     parser.add_argument("--scenario", type=str, default="random",
                         help="Scenario for training (e.g., random, b2w, w2b, clustered, toggle)")
@@ -341,4 +341,11 @@ def parse_args():
     parser.add_argument("--replay_seen_only", action="store_true",
     help="If set, sample replay only from already seen domains (default). If not set, allow all domains.")
     
+    ## SI specific
+    parser.add_argument("--si_c", type=float, default=0.6,
+    help="SI regularization strength c. Higher = more stability, less plasticity. Typical: 0.05–1.0.")
+
+    parser.add_argument("--si_xi", type=float, default=1e-3,
+    help="SI damping term ξ to avoid division by zero in Ω update. Typical: 1e-3.")
+
     return parser.parse_args()

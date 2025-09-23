@@ -4,7 +4,6 @@ import train_CL as train_WCL
 import train_WCL_w2b_b2w_togg as train_WCL_w2b_b2w_togg
 import train_CL_EWC_w2b_b2w_togg as EWC_w2b_b2w_togg
 import tdim_replay as tdim_replay
-# import train_CL_LwF_w2b_b2w_togg as LwF_w2b_b2w_togg
 import train_WCL_b2w as train_WCL_b2w
 import train_CL_SI as train_si
 import train_CL_EWC as train_ewc
@@ -202,9 +201,9 @@ def main():
         
     
     elif algorithm == "SI":
-        train_si.train_domain_incremental_model(train_domains_loader,test_domains_loader,full_domains_loader,model,num_epochs=args.epochs,
-            learning_rate=args.learning_rate, device=device, exp_no=exp_no, patience=args.patience, forgetting_threshold=args.forgetting_threshold)
-    
+        train_si.tdim_si(args, run_wandb, train_domains_loader, test_domains_loader, train_domain_order,
+               device, model, exp_no, num_epochs=args.epochs,
+               learning_rate=args.learning_rate, patience=args.patience, si_c=args.si_c, si_xi=args.si_xi)
     elif algorithm == "EWC":
         # Train using EWC
         train_ewc.tdim_ewc_random(args, run_wandb, train_domains_loader, test_domains_loader, train_domain_order, device,
@@ -232,9 +231,6 @@ def main():
                                         model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience,
                                         alpha=args.alpha, T=args.temperature, warmup_epochs=args.warmup_epochs, enc_lr_scale=args.enc_lr_scale,
                                         weight_decay=args.weight_decay)
-        # elif scenario in ["w2b","b2w","toggle"]:
-        #    lwf_w2b_b2w_togg.tdim_lwf(args, run_wandb, train_domains_loader, test_domains_loader, device,
-        #                                model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience)
         
     elif algorithm == "GR":
             train_genreplay.tdim_gr_random(args, run_wandb, train_domains_loader, test_domains_loader, train_domain_order, device, 
