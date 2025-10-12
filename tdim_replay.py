@@ -10,7 +10,7 @@ from copy import deepcopy
 import logging
 from tqdm import tqdm, trange
 from collections import defaultdict, deque
-from utils import save_results_as_json
+from utils import save_results_as_json, _sync, _json_safe
     
 # ===========================
 # Simple Exemplar Replay Buffer
@@ -110,9 +110,9 @@ def tdim_replay(
     replay_seen_only=True         # if True, only sample from already seen domains
 ):
     """
-    Exemplar replay variant of your W2B loop.
-    - After each batch on the current domain, we optionally mix in a replay batch.
-    - Stores examples from each domain via reservoir sampling (bounded memory).
+    Exemplar replay variant with richer metric analysis:
+    - Tracks F1 + AUC + confusion matrices
+    - Uses plasticity (pre/post) and BWT for F1 & AUC (no FWT)
     """
     import evaluate_model, evaluation as evaluate, result_utils as result_utils
     from utils import save_results_as_json, _sync
@@ -121,9 +121,14 @@ def tdim_replay(
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
 
-    performance_stability = {test_domain: [] for test_domain in test_domain_loader.keys()}
-    performance_plasticity = {test_domain: [] for test_domain in test_domain_loader.keys()}
-    domain_training_cost = {test_domain: [] for test_domain in test_domain_loader.keys()}
+    # ====== Metric containers (F1 + AUC + CMs) ======
+    performance_stability   = {d: [] for d in test_domain_loader.keys()}  # F1 stability
+    performance_plasticity  = {d: [] for d in test_domain_loader.keys()}  # F1 plasticity (pre+post)
+    roc_auc_stability       = {d: [] for d in test_domain_loader.keys()}
+    roc_auc_plasticity      = {d: [] for d in test_domain_loader.keys()}
+    confusion_matrix_stability  = {d: [] for d in test_domain_loader.keys()}
+    confusion_matrix_plasticity = {d: [] for d in test_domain_loader.keys()}
+    domain_training_cost    = {d: [] for d in test_domain_loader.keys()}
 
     train_domain_order = list(train_domain_loader.keys())
     seen_domain = set()
@@ -167,7 +172,7 @@ def tdim_replay(
 
         logging.info(f"====== Evaluate current domain {train_domain} on model from previous domain {previous_domain} ======")
 
-        # Pre-train evaluation on the *incoming* domain (plasticity)
+        # ===== Pre-train evaluation on the incoming domain (plasticity PRE) =====
         if idx != 0:
             if best_model_state is not None:
                 model.load_state_dict(best_model_state)
@@ -175,12 +180,22 @@ def tdim_replay(
                 logging.warning("best_model_state uninitialized. Skipping model loading.")
             model.eval()
             if args.architecture == "LSTM_Attention_adapter":
-                metrics = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=domain_id)
+                m_pre = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=domain_id)
             else:
-                metrics = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=None)
-            current_f1 = metrics["f1"]
-            performance_plasticity[train_domain].append(current_f1)
-            run_wandb.log({f"{train_domain}/pretrain_f1": float(current_f1)})
+                m_pre = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=None)
+
+            f1_pre  = float(m_pre["f1"])
+            auc_pre = float(m_pre.get("roc_auc", 0.0))
+            cm_pre  = m_pre.get("confusion_matrix", None)
+
+            performance_plasticity[train_domain].append(f1_pre)
+            roc_auc_plasticity[train_domain].append(auc_pre)
+            confusion_matrix_plasticity[train_domain].append(cm_pre)
+
+            run_wandb.log({
+                f"{train_domain}/pretrain_f1": f1_pre,
+                f"{train_domain}/pretrain_ROC_AUC": auc_pre
+            })
 
         logging.info(f"====== Training on Domain: {train_domain} (with replay) ======")
 
@@ -198,7 +213,6 @@ def tdim_replay(
             epoch_loss = 0.0
             i = -1
 
-            # Iterate over current-domain minibatches
             for i, (X_cur, y_cur) in enumerate(train_domain_loader[train_domain]):
                 X_cur, y_cur = X_cur.to(device), y_cur.to(device)
 
@@ -206,13 +220,11 @@ def tdim_replay(
                 cur_bs = X_cur.size(0)
                 n_replay = int(replay_ratio * cur_bs)
 
-                # Sample replay (only from seen domains unless toggled)
                 replay_domains = list(seen_domain) if replay_seen_only else None
                 replay_pack = memory.sample(n_replay, device, domains_subset=replay_domains)
 
                 if replay_pack is not None and n_replay > 0:
                     X_rep, y_rep = replay_pack["X"], replay_pack["y"]
-                    # if shapes mismatch due to seq len, you might need to pad/trim; assume consistent here
                     X_mix = torch.cat([X_cur, X_rep], dim=0)
                     y_mix = torch.cat([y_cur, y_rep], dim=0)
                 else:
@@ -230,8 +242,7 @@ def tdim_replay(
                 optimizer.step()
                 epoch_loss += loss.item()
 
-                # === Update replay memory with CURRENT real examples (after the step) ===
-                # Store a light slice (you can store all; reservoir handles quota)
+                # Update replay memory with current real examples
                 with torch.no_grad():
                     memory.add_batch(train_domain, X_cur.detach().cpu(), y_cur.detach().cpu())
 
@@ -258,12 +269,12 @@ def tdim_replay(
                         out, _ = model(Xb, domain_id=domain_id)
                     else:
                         out, _ = model(Xb)
-                    loss = criterion(out, yb.long())
+                    loss_val = criterion(out, yb.long())
                     _, pred = torch.max(out.data, 1)
                     all_y_true.extend(yb.cpu().numpy())
                     all_y_pred.extend(pred.cpu().numpy())
                     all_y_prob.extend(torch.nn.functional.softmax(out, dim=1)[:, 1].cpu().numpy())
-                    test_loss += loss.item()
+                    test_loss += loss_val.item()
             test_loss /= max(1, len(test_domain_loader[train_domain]))
 
             metrics = evaluate.evaluate_metrics(
@@ -308,29 +319,44 @@ def tdim_replay(
         else:
             logging.info(f"No improvement for {train_domain}. Model not saved.")
 
-        # Record plasticity/stability on the trained domain (best checkpoint)
+        # ===== Post-train plasticity & stability on current domain =====
         model.eval()
         if args.architecture == "LSTM_Attention_adapter":
-            best_metrics = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=domain_id)
+            m_post = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=domain_id)
         else:
-            best_metrics = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=None)
-        current_f1 = best_metrics["f1"]
-        performance_plasticity[train_domain].append(current_f1)
-        performance_stability[train_domain].append(current_f1)
+            m_post = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=None)
 
-        # --- Evaluate all previously seen domains (stability/BWT) ---
+        f1_post  = float(m_post["f1"])
+        auc_post = float(m_post.get("roc_auc", 0.0))
+        cm_post  = m_post.get("confusion_matrix", None)
+
+        performance_plasticity[train_domain].append(f1_post)
+        performance_stability[train_domain].append(f1_post)
+        roc_auc_plasticity[train_domain].append(auc_post)
+        roc_auc_stability[train_domain].append(auc_post)
+        confusion_matrix_plasticity[train_domain].append(cm_post)
+        confusion_matrix_stability[train_domain].append(cm_post)
+
+        # --- Evaluate all previously seen domains (stability) ---
         logging.info(f"====== Evaluating seen domains after training on {train_domain} ======")
         for test_domain in tqdm(seen_domain, desc="Seen domains eval"):
             if test_domain == train_domain:
                 continue
             model.eval()
             if args.architecture == "LSTM_Attention_adapter":
-                metrics = evaluate_model.eval_model(args, model, test_domain_loader, test_domain, device, domain_id=domain_to_id[test_domain])
+                m_prev = evaluate_model.eval_model(args, model, test_domain_loader, test_domain, device, domain_id=domain_to_id[test_domain])
             else:
-                metrics = evaluate_model.eval_model(args, model, test_domain_loader, test_domain, device, domain_id=None)
-            performance_stability[test_domain].append(metrics["f1"])
+                m_prev = evaluate_model.eval_model(args, model, test_domain_loader, test_domain, device, domain_id=None)
 
-        # --- Pick next domain: W2B policy (worst current F1 among unseen) ---
+            f1_prev  = float(m_prev["f1"])
+            auc_prev = float(m_prev.get("roc_auc", 0.0))
+            cm_prev  = m_prev.get("confusion_matrix", None)
+
+            performance_stability[test_domain].append(f1_prev)
+            roc_auc_stability[test_domain].append(auc_prev)
+            confusion_matrix_stability[test_domain].append(cm_prev)
+
+        # --- Pick next domain (W2B policy) ---
         logging.info(f"====== Evaluating unseen domains after {train_domain} to pick next ======")
         train_w2b = {domain: 0.0 for domain in unseen_domain}
         for test_domain in tqdm(unseen_domain, desc="Unseen domains eval"):
@@ -349,21 +375,46 @@ def tdim_replay(
 
         print(f"====== Finished Training on Domain: {previous_domain} ======")
 
-    # -------- Final metrics: BWT / FWT --------
-    logging.info("====== Final Metrics after all domains ======")
-    bwt_values, bwt_dict, bwt_values_dict = result_utils.compute_BWT(performance_stability, train_domain_order)
-    fwt_values, fwt_dict = result_utils.compute_FWT(performance_plasticity, train_domain_order)
+    # ===== Final Metrics (F1) =====
+    logging.info("====== Final Metrics (F1) ======")
+    bwt_values_f1, bwt_dict_f1, bwt_values_dict_f1 = result_utils.compute_BWT(performance_stability, train_domain_order)
+    plasticity_values_f1, plasticity_dict_f1       = result_utils.compute_plasticity(performance_plasticity, train_domain_order)
+
+    # ===== Final Metrics (AUC) =====
+    logging.info("====== Final Metrics (ROC-AUC) ======")
+    bwt_values_auc, bwt_dict_auc, bwt_values_dict_auc = result_utils.compute_BWT(roc_auc_stability, train_domain_order)
+    plasticity_values_auc, plasticity_dict_auc        = result_utils.compute_plasticity(roc_auc_plasticity, train_domain_order)
 
     results_to_save = {
         "exp_no": exp_no,
+        "train_domain_order": train_domain_order,
+
+        # F1 series
         "performance_stability": performance_stability,
         "performance_m": performance_plasticity,
-        "BWT_values": bwt_values,
-        "BWT_dict": bwt_dict,
-        "FWT_values": fwt_values,
-        "FWT_dict": fwt_dict,
-        "train_domain_order": train_domain_order,
+
+        # AUC series
+        "roc_auc_stability": roc_auc_stability,
+        "roc_auc_plasticity": roc_auc_plasticity,
+
+        # Confusions & cost
+        "confusion_matrix_stability": confusion_matrix_stability,
+        "confusion_matrix_plasticity": confusion_matrix_plasticity,
         "domain_training_cost": domain_training_cost,
+
+        # Final aggregates (F1)
+        "BWT_values_f1": bwt_values_f1,
+        "BWT_dict_f1": bwt_dict_f1,
+        "plasticity_values_f1": plasticity_values_f1,
+        "plasticity_dict_f1": plasticity_dict_f1,
+
+        # Final aggregates (AUC)
+        "BWT_values_auc": bwt_values_auc,
+        "BWT_dict_auc": bwt_dict_auc,
+        "plasticity_values_auc": plasticity_values_auc,
+        "plasticity_dict_auc": plasticity_dict_auc,
+
+        # Replay config
         "replay_config": {
             "total_capacity": replay_total_capacity,
             "per_domain_cap": replay_per_domain_cap,
@@ -372,11 +423,13 @@ def tdim_replay(
             "replay_seen_only": replay_seen_only
         }
     }
+    # Convert everything to plain Python types
+    results_to_save = _json_safe(results_to_save)
 
-    save_results_as_json(results_to_save, filename=f"{exp_no}_experiment_results_{args.architecture}_{args.algorithm}_REPLAY_{args.scenario}.json")
-    logging.info("Final training complete. Results saved.")
+    save_results_as_json(
+        results_to_save,
+        filename=f"{exp_no}_experiment_results_{args.architecture}_{args.algorithm}_REPLAY_{args.scenario}.json"
+    )
 
-    run_wandb.summary["BWT/list"] = bwt_values
-    run_wandb.summary["FWT/list"] = fwt_values
-
-    
+    run_wandb.summary["BWT_F1/list"]  = bwt_values_f1
+    run_wandb.summary["BWT_AUC/list"] = bwt_values_auc

@@ -3,7 +3,7 @@ import os
 import time
 import torch.nn as nn
 import torch.optim as optim
-from torch.nn.utils import clip_grad_norm_
+from torch.nn.utils.clip_grad import clip_grad_norm_
 from tqdm import tqdm, trange
 import matplotlib.pyplot as plt
 import numpy as np
@@ -13,7 +13,7 @@ import logging
 import sys
 import warnings
 warnings.filterwarnings("ignore")
-from utils import save_results_as_json, _sync
+from utils import save_results_as_json, _sync, _json_safe
 import evaluate_model
 # import result_utils
 import evaluation as evaluate
@@ -38,7 +38,14 @@ def tdim_random(args, run_wandb, train_domain_loader, test_domain_loader, train_
 
     performance_stability = {test_domain: [] for test_domain in test_domain_loader.keys()}
     performance_plasticity = {test_domain: [] for test_domain in test_domain_loader.keys()}
+    fwt_pre_f1 = {d: None for d in test_domain_loader.keys()}
+    fwt_pre_auc = {d: None for d in test_domain_loader.keys()}
+
     domain_training_cost = {test_domain: [] for test_domain in test_domain_loader.keys()}
+    roc_auc_stability = {test_domain: [] for test_domain in test_domain_loader.keys()}
+    roc_auc_plasticity = {test_domain: [] for test_domain in test_domain_loader.keys()}
+    confusion_matrix_stability = {test_domain: [] for test_domain in test_domain_loader.keys()}
+    confusion_matrix_plasticity = {test_domain: [] for test_domain in test_domain_loader.keys()}
 
     seen_domain = set()
     #train_domain_order = list(train_domain_loader.keys())
@@ -71,6 +78,7 @@ def tdim_random(args, run_wandb, train_domain_loader, test_domain_loader, train_
         # Evaluate on same domain's test set
         # Pre-train eval on this domain (plasticity)
         if idx != 0:
+
             all_y_true, all_y_pred, all_y_prob = [], [], []
             if best_model_state is not None:
                 model.load_state_dict(best_model_state)
@@ -82,8 +90,16 @@ def tdim_random(args, run_wandb, train_domain_loader, test_domain_loader, train_
             else:
                 metrics = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=None)
             current_f1= metrics["f1"]
+            #  ---- FWT capture (pre-train on this domain, before learning it) ----
+            fwt_pre_f1[train_domain] = float(metrics["f1"])
+            fwt_pre_auc[train_domain] = float(metrics["roc_auc"])
             performance_plasticity[train_domain].append(current_f1)
+            roc_auc_plasticity[train_domain].append(metrics["roc_auc"])
+            confusion_matrix_plasticity[train_domain].append(metrics["confusion_matrix"])
             logging.info(f" F1 : Previous domain : {previous_domain} : Current Domain {train_domain}: {current_f1:.4f}")
+            logging.info(f" roc_auc : Previous domain : {previous_domain} : Current Domain {train_domain}: {metrics['roc_auc']:.4f}")
+            logging.info(f" confusion_matrix : Previous domain : {previous_domain} : Current Domain {train_domain}: {metrics['confusion_matrix']}")
+            
             # --- W&B ---
             run_wandb.log({f"{train_domain}/pretrain_f1": float(current_f1)})
 
@@ -168,8 +184,6 @@ def tdim_random(args, run_wandb, train_domain_loader, test_domain_loader, train_
                 # plus any others from your metrics dict...
             })
 
-
-
             if current_f1 > best_f1:
                 best_f1 = current_f1
                 best_model_state = deepcopy(model.state_dict())
@@ -212,6 +226,14 @@ def tdim_random(args, run_wandb, train_domain_loader, test_domain_loader, train_
         current_f1 = best_metrices["f1"]
         performance_plasticity[train_domain].append(current_f1)
         performance_stability[train_domain].append(current_f1)
+        roc_auc_plasticity[train_domain].append(best_metrices["roc_auc"])
+        roc_auc_stability[train_domain].append(best_metrices["roc_auc"])
+        confusion_matrix_plasticity[train_domain].append(best_metrices["confusion_matrix"])
+        confusion_matrix_stability[train_domain].append(best_metrices["confusion_matrix"])
+        
+
+        
+
         logging.info(f" F1 : Current Domain {train_domain}: {current_f1:.4f}")
         logging.info(f"performance_plasticity: {performance_plasticity}")
         logging.info(f"metrics: {best_metrices}")
@@ -232,38 +254,60 @@ def tdim_random(args, run_wandb, train_domain_loader, test_domain_loader, train_
                 metrics = evaluate_model.eval_model(args, model, test_domain_loader, test_domain, device, domain_id=None)
             current_f1 = metrics["f1"]
             performance_stability[test_domain].append(current_f1)
-            
+            roc_auc_stability[test_domain].append(metrics["roc_auc"])
+            confusion_matrix_stability[test_domain].append(metrics["confusion_matrix"])
+
             logging.info(f"performance_stability | {test_domain}: {performance_stability[test_domain]}")
+            logging.info(f"roc_auc | {test_domain}: {roc_auc_stability[test_domain]}")
 
         print(f"====== Finished Training on Domain: {train_domain} ======")
 
-    # Final Metrics: BWT / FWT
-    logging.info(f"====== Final Metrics after training on all domains ======")
-    bwt_values, bwt_dict, bwt_values_dict = result_utils.compute_BWT(performance_stability, train_domain_order)
-    fwt_values, fwt_dict = result_utils.compute_FWT(performance_plasticity, train_domain_order)
-    logging.info(f"\n BWT: {bwt_values}")
-    logging.info(f"\n BWT of all previous domain corresponding to the training domain: {bwt_values_dict}")
-    logging.info(f"\n BWT per domain: {bwt_dict}")
+    # Final Metrics: BWT / plasticity
+    logging.info(f"====== Final Metrics after training on all domains based on F1-Score ======")
+    bwt_values_f1, bwt_dict_f1, bwt_values_dict_f1 = result_utils.compute_BWT(performance_stability, train_domain_order)
+    plasticity_values_f1, plasticity_dict_f1 = result_utils.compute_plasticity(performance_plasticity, train_domain_order)
+    logging.info(f"\n BWT: {bwt_values_f1}")
+    logging.info(f"\n BWT of all previous domain corresponding to the training domain: {bwt_values_dict_f1}")
+    logging.info(f"\n BWT per domain: {bwt_dict_f1}")
 
-    logging.info(f"FWT: {fwt_values}")
-    logging.info(f"FWT per domain: {fwt_dict}")
+    logging.info(f"plasticity: {plasticity_values_f1}")
+    logging.info(f"plasticity per domain: {plasticity_dict_f1}")
 
+    logging.info(f"====== Final Metrics after training on all domains based on (ROC-AUC) ======")
+    bwt_values_auc, bwt_dict_auc, bwt_values_dict_auc = result_utils.compute_BWT(roc_auc_stability, train_domain_order)
+    plasticity_values_auc, plasticity_dict_auc = result_utils.compute_plasticity(roc_auc_plasticity, train_domain_order)
+    logging.info(f"\n BWT: {bwt_values_auc}")
+    logging.info(f"\n BWT of all previous domain corresponding to the training domain: {bwt_values_dict_auc}")
+    logging.info(f"\n BWT per domain: {bwt_dict_auc}")
 
+    logging.info(f"plasticity: {plasticity_values_auc}")
+    logging.info(f"plasticity per domain: {plasticity_dict_auc}")
 
+    
     results_to_save = {
         "exp_no": exp_no,
         "performance_stability": performance_stability,
         "performance_m": performance_plasticity,
-        "BWT_values": bwt_values,
-        "BWT_dict": bwt_dict,
-        "FWT_values": fwt_values,
-        "FWT_dict": fwt_dict,
+        "roc_auc_stability": roc_auc_stability,
+        "roc_auc_plasticity": roc_auc_plasticity,
+        "BWT_values_f1": bwt_values_f1,
+        "BWT_dict_f1": bwt_dict_f1,
+        "plasticity_values_f1": plasticity_values_f1,
+        "plasticity_dict_f1": plasticity_dict_f1,
+        "BWT_values_auc": bwt_values_auc,
+        "BWT_dict_auc": bwt_dict_auc,
+        "plasticity_values_auc": plasticity_values_auc,
+        "plasticity_dict_auc": plasticity_dict_auc,
         "train_domain_order": train_domain_order,
         "domain_training_cost": domain_training_cost,
+        "confusion_matrix_stability": confusion_matrix_stability,
+        "confusion_matrix_plasticity": confusion_matrix_plasticity
     }
+
+    # Convert everything to plain Python types
+    results_to_save = _json_safe(results_to_save)
 
     save_results_as_json(results_to_save, filename=f"{exp_no}_experiment_results_{args.architecture}_{args.algorithm}_{args.scenario}.json")
     logging.info("Final training complete. Results saved.")
 
-    run_wandb.summary["BWT/list"] =  bwt_values
-    run_wandb.summary["FWT/list"] =  fwt_values
+

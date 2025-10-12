@@ -13,13 +13,14 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 import torch.optim as optim
-from torch.nn.utils import clip_grad_norm_
+from torch.nn.utils.clip_grad import clip_grad_norm_
 from torch.utils.data import DataLoader, TensorDataset, ConcatDataset
 
-from utils import save_results_as_json, _sync
+from utils import save_results_as_json, _sync, _json_safe
 import evaluate_model
 import evaluation as evaluate
 import result_utils as result_utils
+
 
 class LSTMVAE(nn.Module):
     def __init__(self, feature_dim, hidden_dim=64, latent_dim=32, seq_len=10):
@@ -50,12 +51,12 @@ class LSTMVAE(nn.Module):
         return mu + eps * std
 
     def decode(self, z, target_len=None):
-        # z: (B, latent_dim)
+        """Decode latent z to a sequence. Honors target_len if provided."""
         T = self.seq_len if target_len is None else target_len
         h0 = self.dec_init(z).unsqueeze(0)           # (1,B,H)
         c0 = torch.zeros_like(h0)                    # (1,B,H)
-        # Start-of-seq zeros (no teacher forcing)
-        seq0 = torch.zeros(z.size(0), self.seq_len, self.feature_dim, device=z.device)
+        # Start-of-seq zeros (no teacher forcing), USE T here (fix)
+        seq0 = torch.zeros(z.size(0), T, self.feature_dim, device=z.device)
         out, _ = self.dec_lstm(seq0, (h0, c0))       # (B,T,H)
         return self.out_fc(out)                      # (B,T,F)
 
@@ -66,11 +67,11 @@ class LSTMVAE(nn.Module):
         return recon, mu, logvar
 
 
-
 def vae_loss_beta(recon, x, mu, logvar, beta=1.0):
-    recon_mse = F.mse_loss(recon, x, reduction="mean")   # mean is stabler for long seqs
+    recon_mse = F.mse_loss(recon, x, reduction="mean")
     kl = -0.5 * torch.mean(1 + logvar - mu.pow(2) - logvar.exp())
     return recon_mse + beta * kl
+
 
 def train_vae_on_dataset(vae, device, dataset, num_epochs=5, lr=1e-3, batch_size=64,
                          beta_start=0.0, beta_end=1.0, log_prefix="VAE"):
@@ -92,7 +93,6 @@ def train_vae_on_dataset(vae, device, dataset, num_epochs=5, lr=1e-3, batch_size
         logging.info(f"{log_prefix} Epoch {epoch+1}/{num_epochs} | β={beta:.3f} | Loss: {avg:.4f}")
 
 
-
 @torch.no_grad()
 def teacher_predict_soft(teacher_model, xb, device, architecture=None, domain_id=None, T=2.0):
     teacher_model.eval()
@@ -111,31 +111,54 @@ def distillation_loss(student_logits, teacher_probs, T=2.0):
     return loss_kl
 
 
+def _match_time_and_feat(x: torch.Tensor, target_T: int, target_F: int) -> torch.Tensor:
+    """
+    Ensure x has shape [B, target_T, target_F].
+    - If time length differs: center-crop (if longer) or right-pad with zeros (if shorter).
+    - If feature dim mismatches: raise (you generally shouldn't change features here).
+    """
+    assert x.dim() == 3, f"expected [B,T,F], got {tuple(x.shape)}"
+    B, T, F = x.shape
+    if F != target_F:
+        raise ValueError(f"Feature dim mismatch: replay F={F} vs target F={target_F}.")
+    if T == target_T:
+        return x
+    if T > target_T:
+        start = (T - target_T) // 2
+        return x[:, start:start+target_T, :]
+    else:
+        pad_T = target_T - T
+        pad = torch.zeros(B, pad_T, F, device=x.device, dtype=x.dtype)
+        return torch.cat([x, pad], dim=1)
+
 
 def tdim_gr_random(
     args, run_wandb, train_domain_loader, test_domain_loader, train_domain_order, device,
     model, exp_no, num_epochs=10, learning_rate=0.01, patience=3,
-    vae_hidden=64, vae_latent=32, window_size=1, num_features=140,
+    vae_hidden=64, vae_latent=32, window_size=10, num_features=140,
     vae_epochs=5, vae_lr=1e-3,
     replay_samples_per_epoch=0,   # if 0 -> computed from r & real count
     replay_ratio=0.5,             # r: weight on *real* loss; (1-r) on replay loss
     use_teacher_labels=True, T=2.0
 ):
     """
-    Domain-incremental training with Generative Replay (faithful to DGR):
-      - No storage of old real data.
-      - New VAE per domain trained on current real + replay from previous VAE.
-      - Solver trained with CE on real and KL distillation on replay (soft targets).
-      - Loss mixed by 'replay_ratio' r (r on real CE, 1-r on replay KL).
+    Domain-incremental training with Generative Replay (DGR) + richer metrics:
+      - Training loop unchanged.
+      - Metrics: plasticity (pre/post), AUC, confusion matrices, BWT for F1 & AUC.
+      - FWT removed.
     """
     criterion_ce = nn.CrossEntropyLoss()
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
 
-    performance_stability  = {d: [] for d in test_domain_loader.keys()}
-    performance_plasticity = {d: [] for d in test_domain_loader.keys()}
-    domain_training_cost   = {d: [] for d in test_domain_loader.keys()}
+    # ====== Metric containers (F1 + AUC + CMs) ======
+    performance_stability   = {d: [] for d in test_domain_loader.keys()}  # F1 stability
+    performance_plasticity  = {d: [] for d in test_domain_loader.keys()}  # F1 plasticity (pre+post)
+    roc_auc_stability       = {d: [] for d in test_domain_loader.keys()}
+    roc_auc_plasticity      = {d: [] for d in test_domain_loader.keys()}
+    confusion_matrix_stability  = {d: [] for d in test_domain_loader.keys()}
+    confusion_matrix_plasticity = {d: [] for d in test_domain_loader.keys()}
+    domain_training_cost    = {d: [] for d in test_domain_loader.keys()}
 
-    # train_domain_order = list(train_domain_loader.keys())
     domain_to_id = {name: i for i, name in enumerate(train_domain_order)}
 
     run_wandb.config.update({
@@ -180,15 +203,27 @@ def tdim_gr_random(
         else:
             prev_solver = None
 
-        # Pre-train eval (plasticity) on current domain (how well previous knowledge transfers)
+        # ===== Pre-train evaluation (plasticity PRE) on incoming domain =====
         if idx != 0:
             model.eval()
             if args.architecture == "LSTM_Attention_adapter":
-                metrics = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=domain_id)
+                m_pre = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=domain_id)
             else:
-                metrics = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=None)
-            run_wandb.log({f"{train_domain}/pretrain_f1": float(metrics["f1"])})
-            performance_plasticity[train_domain].append(metrics["f1"])
+                m_pre = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=None)
+
+            f1_pre  = float(m_pre["f1"])
+            auc_pre = float(m_pre.get("roc_auc", 0.0))
+            cm_pre  = m_pre.get("confusion_matrix", None)
+
+            performance_plasticity[train_domain].append(f1_pre)
+            roc_auc_plasticity[train_domain].append(auc_pre)
+            confusion_matrix_plasticity[train_domain].append(cm_pre)
+
+            run_wandb.log({
+                f"{train_domain}/pretrain_f1": f1_pre,
+                f"{train_domain}/pretrain_ROC_AUC": auc_pre
+            })
+
         logging.info(f"====== Training on Domain: {train_domain} (Generative Replay) ======")
         best_f1 = -float("inf")
         epochs_no_improve = 0
@@ -196,32 +231,36 @@ def tdim_gr_random(
         _sync(device)
         t0 = time.perf_counter()
 
-        # Prepare real loader
-        real_loader = train_domain_loader[train_domain]  # DataLoader of (X,y)
-        # Initialize a fresh VAE for this domain (student generator)
-        replay_vae = LSTMVAE(
-            feature_dim=num_features, hidden_dim=vae_hidden,
-            latent_dim=vae_latent, seq_len=window_size
-        ).to(device)
-
-        # ===== Train VAE on current real + replay from prev VAE (no old real cache!) =====
-        # Collect current real sequences once (optional sampling to limit memory)
+        # Prepare real loader and collect current sequences once
+        real_loader = train_domain_loader[train_domain]
         real_X_list = []
         for Xb, _ in real_loader:
             real_X_list.append(Xb)
-
         if len(real_X_list) > 0:
             X_current = torch.cat(real_X_list, dim=0)
             print(f"[DEBUG] X_current shape: {tuple(X_current.shape)}")
         else:
             X_current = torch.empty(0, window_size, num_features)
         X_current = X_current.to(device)
-        
-        # Generate replay inputs from previous VAE if available
+
+        # Initialize a fresh VAE for this domain (student generator)
+        replay_vae = LSTMVAE(
+            feature_dim=num_features, hidden_dim=vae_hidden,
+            latent_dim=vae_latent, seq_len=window_size
+        ).to(device)
+
+        # ===== Train VAE on: current real (+ replay from prev_vae, if present) =====
         if prev_vae is not None and X_current.size(0) > 0:
-            n_replay_for_gen = X_current.size(0)   # symmetric
+            n_replay_for_gen = X_current.size(0)
             z_gen = torch.randn(n_replay_for_gen, prev_vae.latent_dim, device=device)
-            X_replay_for_gen = prev_vae.decode(z_gen).detach()
+
+            # generate **with the target time length** to avoid mismatch
+            target_T = X_current.size(1)
+            target_F = X_current.size(2)
+            X_replay_for_gen = prev_vae.decode(z_gen, target_len=target_T).detach()
+            # final guard (crop/pad if still mismatched)
+            X_replay_for_gen = _match_time_and_feat(X_replay_for_gen, target_T, target_F)
+
             X_gen_train = torch.cat([X_current, X_replay_for_gen], dim=0)
         else:
             X_gen_train = X_current
@@ -233,7 +272,7 @@ def tdim_gr_random(
             beta_start=0.0, beta_end=1.0, log_prefix=f"VAE[{train_domain}]"
         )
 
-        # Freeze the trained VAE for this domain for solver replay generation
+        # Freeze trained VAE for solver replay
         replay_vae.eval()
         for p in replay_vae.parameters():
             p.requires_grad = False
@@ -252,48 +291,44 @@ def tdim_gr_random(
             if replay_samples_per_epoch > 0:
                 n_syn = replay_samples_per_epoch
             else:
-                # choose n_syn so that expected loss mixing approximates r
-                # r: real weight, (1-r): replay weight
-                # Make counts proportional to weights (optional heuristic)
                 n_syn = int(num_real * (1 - replay_ratio) / max(replay_ratio, 1e-6))
-                n_syn = max(n_syn, args.batch_size)  # ensure some replay
+                n_syn = max(n_syn, args.batch_size)
 
             # Generate synthetic sequences (solver training)
             if n_syn > 0:
                 z = torch.randn(n_syn, replay_vae.latent_dim, device=device)
-                syn_X = replay_vae.decode(z).detach()
+                # decode with the **current window_size** to keep shapes consistent
+                syn_X = replay_vae.decode(z, target_len=window_size).detach()
                 if use_teacher_labels and (prev_solver is not None):
                     syn_soft = teacher_predict_soft(
                         prev_solver, syn_X, device,
                         architecture=args.architecture,
                         domain_id=domain_id if args.architecture=="LSTM_Attention_adapter" else None,
                         T=T
-                    )  # probs
+                    )
                 else:
-                    # fallback: uniform soft targets
-                    num_classes = 2 if hasattr(args, "num_classes") is False else args.num_classes
+                    num_classes = getattr(args, "num_classes", 2)
                     syn_soft = torch.full((syn_X.size(0), num_classes), 1.0/num_classes, device=device)
             else:
                 syn_X, syn_soft = None, None
 
-            # Iterate over real batches; for each, also take a replay slice
             syn_ptr = 0
-            syn_idx = torch.tensor([], device=device)  # Initialize as an empty tensor
-            
+            syn_idx = torch.tensor([], device=device)
             if syn_X is not None:
-                assert syn_soft is not None, "syn_soft must be provided when syn_X is present"
                 syn_idx = torch.randperm(syn_X.size(0), device=device)
                 syn_ptr = 0
-
 
             for i, (Xr, yr) in enumerate(real_loader):
                 Xr = Xr.to(device); yr = yr.to(device)
 
-                # Optional: pick a replay chunk ~ matching batch size
+                # Pick a replay chunk ~ batch size
                 if syn_X is not None and syn_soft is not None:
+                    # Align Xs to Xr shape if needed (guard rails)
+                    if syn_X.size(1) != Xr.size(1) or syn_X.size(2) != Xr.size(2):
+                        syn_X = _match_time_and_feat(syn_X, Xr.size(1), Xr.size(2))
+
                     take = min(args.batch_size, syn_X.size(0) - syn_ptr)
                     if take <= 0:
-                        # reshuffle
                         syn_idx = torch.randperm(syn_X.size(0), device=device)
                         syn_ptr = 0
                         take = min(args.batch_size, syn_X.size(0))
@@ -323,7 +358,7 @@ def tdim_gr_random(
                 else:
                     loss_replay = torch.tensor(0.0, device=device)
 
-                # Mix by ratio r
+                # Mixed loss
                 loss = replay_ratio * loss_real + (1.0 - replay_ratio) * loss_replay
                 loss.backward()
                 clip_grad_norm_(model.parameters(), max_norm=1.0)
@@ -342,7 +377,7 @@ def tdim_gr_random(
                 f"{train_domain}/epoch_time_s": float(epoch_time),
             })
 
-            # Validation on this domain
+            # ===== Validation on this domain =====
             all_y_true, all_y_pred, all_y_prob = [], [], []
             model.eval()
             test_loss = 0.0
@@ -367,7 +402,8 @@ def tdim_gr_random(
                 np.array(all_y_true), np.array(all_y_pred),
                 np.array(all_y_prob), train_domain, train_domain
             )
-            cur_f1 = metrics["f1"]; cur_auc_roc = metrics["roc_auc"]
+            cur_f1 = float(metrics["f1"])
+            cur_auc_roc = float(metrics.get("roc_auc", 0.0))
 
             logging.info(f"[{train_domain}] | Epoch: {epoch+1}/{num_epochs} | "
                          f"Val Loss: {test_loss:.4f} | F1: {cur_f1:.4f} | AUC-ROC: {cur_auc_roc:.4f}")
@@ -386,7 +422,6 @@ def tdim_gr_random(
                 logging.info(f"New best F1 for {train_domain}: {best_f1:.4f}")
             else:
                 epochs_no_improve += 1
-                logging.info(f"No improvement. Count: {epochs_no_improve}")
             if epochs_no_improve >= patience:
                 logging.info(f"Early stopping for {train_domain} at epoch {epoch+1}")
                 break
@@ -407,20 +442,25 @@ def tdim_gr_random(
         else:
             logging.info(f"No improvement for {train_domain}. Model not saved.")
 
-        # Evaluate best on current domain
+        # ===== Post-train plasticity & stability (current domain) =====
         model.eval()
         if args.architecture == "LSTM_Attention_adapter":
-            best_metrics = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=domain_id)
+            m_post = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=domain_id)
         else:
-            best_metrics = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=None)
-        cur_f1 = best_metrics["f1"]
-        performance_plasticity[train_domain].append(cur_f1)
-        performance_stability[train_domain].append(cur_f1)
-        logging.info(f" F1 : Current Domain : {train_domain}: {cur_f1:.4f}")
-        logging.info(f"performance_plasticity: {performance_plasticity}")
-        logging.info(f"metrics: {best_metrics}")
-        
-        # Stability on previously seen domains
+            m_post = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=None)
+
+        f1_post  = float(m_post["f1"])
+        auc_post = float(m_post.get("roc_auc", 0.0))
+        cm_post  = m_post.get("confusion_matrix", None)
+
+        performance_plasticity[train_domain].append(f1_post)
+        performance_stability[train_domain].append(f1_post)
+        roc_auc_plasticity[train_domain].append(auc_post)
+        roc_auc_stability[train_domain].append(auc_post)
+        confusion_matrix_plasticity[train_domain].append(cm_post)
+        confusion_matrix_stability[train_domain].append(cm_post)
+
+        # ===== Stability on previously seen domains =====
         seen_domain.add(train_domain)
         logging.info(f"====== Evaluating on all previous domains after training on {train_domain} ======")
         for td in tqdm(seen_domain, desc="Stability test"):
@@ -428,38 +468,67 @@ def tdim_gr_random(
                 continue
             model.eval()
             if args.architecture == "LSTM_Attention_adapter":
-                m = evaluate_model.eval_model(args, model, test_domain_loader, td, device, domain_id=domain_to_id[td])
+                m_prev = evaluate_model.eval_model(args, model, test_domain_loader, td, device, domain_id=domain_to_id[td])
             else:
-                m = evaluate_model.eval_model(args, model, test_domain_loader, td, device, domain_id=None)
-            performance_stability[td].append(m["f1"])
-            logging.info(f"performance_stability | {td}: {performance_stability[td]}")
+                m_prev = evaluate_model.eval_model(args, model, test_domain_loader, td, device, domain_id=None)
+
+            f1_prev  = float(m_prev["f1"])
+            auc_prev = float(m_prev.get("roc_auc", 0.0))
+            cm_prev  = m_prev.get("confusion_matrix", None)
+
+            performance_stability[td].append(f1_prev)
+            roc_auc_stability[td].append(auc_prev)
+            confusion_matrix_stability[td].append(cm_prev)
 
         # Move current VAE to prev_vae for next domain
         prev_vae = deepcopy(replay_vae).to(device).eval()
-        for p in prev_vae.parameters(): p.requires_grad = False
+        for p in prev_vae.parameters():
+            p.requires_grad = False
 
-    # ----- Final BWT / FWT -----
-    logging.info(f"====== Final Metrics after training on all domains ======")
-    bwt_values, bwt_dict, bwt_values_dict = result_utils.compute_BWT(performance_stability, train_domain_order)
-    fwt_values, fwt_dict = result_utils.compute_FWT(performance_plasticity, train_domain_order)
-    logging.info(f"\n BWT: {bwt_values}")
-    logging.info(f"\n BWT per-domain list: {bwt_dict}")
-    logging.info(f"\n FWT: {fwt_values}")
-    logging.info(f"\n FWT per-domain: {fwt_dict}")
+    # ===== Final Metrics (F1) =====
+    logging.info("====== Final Metrics (F1) ======")
+    bwt_values_f1, bwt_dict_f1, bwt_values_dict_f1 = result_utils.compute_BWT(performance_stability, train_domain_order)
+    plasticity_values_f1, plasticity_dict_f1       = result_utils.compute_plasticity(performance_plasticity, train_domain_order)
+
+    # ===== Final Metrics (AUC) =====
+    logging.info("====== Final Metrics (ROC-AUC) ======")
+    bwt_values_auc, bwt_dict_auc, bwt_values_dict_auc = result_utils.compute_BWT(roc_auc_stability, train_domain_order)
+    plasticity_values_auc, plasticity_dict_auc        = result_utils.compute_plasticity(roc_auc_plasticity, train_domain_order)
 
     results_to_save = {
         "exp_no": exp_no,
+        "train_domain_order": train_domain_order,
+
+        # F1 series
         "performance_stability": performance_stability,
         "performance_m": performance_plasticity,
-        "BWT_values": bwt_values,
-        "BWT_dict": bwt_dict,
-        "FWT_values": fwt_values,
-        "FWT_dict": fwt_dict,
-        "train_domain_order": train_domain_order,
+
+        # AUC series
+        "roc_auc_stability": roc_auc_stability,
+        "roc_auc_plasticity": roc_auc_plasticity,
+
+        # Confusions & cost
+        "confusion_matrix_stability": confusion_matrix_stability,
+        "confusion_matrix_plasticity": confusion_matrix_plasticity,
         "domain_training_cost": domain_training_cost,
+
+        # Final aggregates (F1)
+        "BWT_values_f1": bwt_values_f1,
+        "BWT_dict_f1": bwt_dict_f1,
+        "plasticity_values_f1": plasticity_values_f1,
+        "plasticity_dict_f1": plasticity_dict_f1,
+
+        # Final aggregates (AUC)
+        "BWT_values_auc": bwt_values_auc,
+        "BWT_dict_auc": bwt_dict_auc,
+        "plasticity_values_auc": plasticity_values_auc,
+        "plasticity_dict_auc": plasticity_dict_auc,
     }
+
+    # JSON-safe conversion for numpy/tensors/etc.
+    results_to_save = _json_safe(results_to_save)
     save_results_as_json(results_to_save, filename=f"{exp_no}_experiment_results_{args.architecture}_{args.algorithm}_{args.scenario}.json")
     logging.info("Final training complete. Results saved.")
 
-    run_wandb.summary["BWT/list"] =  bwt_values
-    run_wandb.summary["FWT/list"] =  fwt_values
+    run_wandb.summary["BWT_F1/list"]  = bwt_values_f1
+    run_wandb.summary["BWT_AUC/list"] = bwt_values_auc

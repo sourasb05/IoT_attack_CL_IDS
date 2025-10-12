@@ -249,103 +249,186 @@ def confidence_from_logits(logits: torch.Tensor):
     return probs, preds, confs
 
 
+
+def _json_safe(obj):
+    """Recursively convert NumPy/PyTorch/Pandas/sets/tuples into JSON-serializable types."""
+    import numpy as np
+    import torch
+
+    # NumPy scalars
+    if isinstance(obj, np.generic):
+        return obj.item()
+
+    # NumPy arrays
+    if isinstance(obj, np.ndarray):
+        return obj.tolist()
+
+    # PyTorch tensors
+    if isinstance(obj, torch.Tensor):
+        return obj.detach().cpu().tolist()
+
+    # Pandas types
+    try:
+        import pandas as pd
+        if isinstance(obj, (pd.Series, pd.Index)):
+            return obj.tolist()
+        if isinstance(obj, pd.DataFrame):
+            return obj.to_dict(orient="list")
+    except Exception:
+        pass
+
+    # Builtins that need conversion
+    if isinstance(obj, (set, tuple)):
+        return [_json_safe(x) for x in obj]
+
+    # Dicts / lists: recurse
+    if isinstance(obj, dict):
+        return {str(k): _json_safe(v) for k, v in obj.items()}
+    if isinstance(obj, list):
+        return [_json_safe(x) for x in obj]
+
+    # Everything else: leave as is (int/float/str/bool/None)
+    return obj
+
+
+
+import argparse  # make sure this is imported
+
 def parse_args():
     parser = argparse.ArgumentParser(description="Training script with W&B logging")
 
-    # W&B related
-    parser.add_argument("--project", type=str, default="attack_CL",
-                        help="W&B project name")
-    parser.add_argument("--entity", type=str, default="sourasb05",
-                        help="W&B entity (your username or team name)")
-    parser.add_argument("--run_name", type=str, default="experiment-1",
-                        help="Name of this run in W&B")
-    
-    # Model parameters
-    parser.add_argument("--learning_rate", type=float, default=0.001,
-                        help="Learning rate for the optimizer")
-    parser.add_argument("--architecture", type=str, default="LSTM", 
-                        help="Model architecture to use (e.g., LSTM, BiLSTM, LSTM_Attention, BiLSTM_Attention, LSTM_Attention_adapter)")
-    
-    parser.add_argument("--epochs", type=int, default=3, 
-                        help="Number of epochs to train the model")
-    parser.add_argument("--algorithm", type=str, default="SI",
-                        help="Algorithm to use for continual learning (e.g., EWC, EWC_ZS, GR, SI, LwF, WCL, Replay)")
-    parser.add_argument("--scenario", type=str, default="random",
-                        help="Scenario for training (e.g., random, b2w, w2b, clustered, toggle)")
-    parser.add_argument("--exp_no", type=int, default=1,
-                        help="Experiment number for logging")
-    parser.add_argument("--window_size", type=int, default=10,
-                        help="Size of the sliding window for time series data")
-    parser.add_argument("--step_size", type=int, default=3,
-                        help="Step size for sliding window")
-    parser.add_argument("--batch_size", type=int, default=128,
-                        help="Batch size for training")
-    parser.add_argument("--input_size", type=int, default=140,
-                        help="Input size for the model (number of features)")
-    parser.add_argument("--hidden_size", type=int, default=10,
-                        help="Hidden size for the model")
-    parser.add_argument("--output_size", type=int, default=2,
-                        help="Output size for the model (number of classes)")
-    parser.add_argument("--num_layers", type=int, default=1,
-                        help="Number of layers in the model")
-    parser.add_argument("--dropout", type=float, default=0.3,
-                        help="Dropout rate for the model")
-    # Distillation-related
+    # --- W&B ---
+    parser.add_argument("--project", type=str, default="attack_CL")
+    parser.add_argument("--entity", type=str, default="sourasb05")
+    parser.add_argument("--run_name", type=str, default="experiment-1")
+
+    # --- Model / training ---
+    parser.add_argument("--learning_rate", type=float, default=0.001)
+    parser.add_argument("--architecture", type=str, default="LSTM")
+    parser.add_argument("--epochs", type=int, default=3)
+    parser.add_argument("--algorithm", type=str, default="GR")
+    parser.add_argument("--scenario", type=str, default="random")
+    parser.add_argument("--exp_no", type=int, default=1)
+    parser.add_argument("--window_size", type=int, default=10)
+    parser.add_argument("--step_size", type=int, default=3)
+    parser.add_argument("--batch_size", type=int, default=128)
+    parser.add_argument("--input_size", type=int, default=140)
+    parser.add_argument("--hidden_size", type=int, default=10)
+    parser.add_argument("--output_size", type=int, default=2)
+    parser.add_argument("--num_layers", type=int, default=1)
+    parser.add_argument("--dropout", type=float, default=0.3)
+    parser.add_argument("--bidirectional", action='store_true')
+    parser.add_argument("--patience", type=int, default=2)
+    parser.add_argument("--forgetting_threshold", type=float, default=0.01)
+    parser.add_argument("--use_wandb", action="store_true")
+
+    # --- Distillation (LwF core) ---
     parser.add_argument("--alpha", type=float, default=0.5,
-    help="Weight for the KD (distillation) loss. "
-         "0 = no distillation (pure CE on new domain). "
-         "Higher values preserve old knowledge but may reduce plasticity. "
-         "Typical range: 0.3–1.0.")
-
+                        help="LwF KD weight (higher=stability↑, plasticity↓).")
     parser.add_argument("--temperature", type=float, default=4.0,
-    help="Softmax temperature for distillation. "
-         "Higher T produces softer probability distributions, revealing 'dark knowledge'. "
-         "Gradients are rescaled with Hinton's T^2 trick. "
-         "Typical range: 2.0–5.0.")
-    
+                        help="LwF softmax temperature (2–5).")
     parser.add_argument("--enc_lr_scale", type=float, default=0.5,
-    help="Scaling factor for encoder (LSTM) learning rate relative to classifier head. "
-         "Keeps the encoder more stable while the head adapts faster. "
-         "Typical range: 0.3–0.7.")
+                        help="Encoder LR scale vs head LR (0.3–0.7).")
     parser.add_argument("--warmup_epochs", type=int, default=3,
-    help="Number of warm-up epochs where only the classifier head (fc1/fc2) is trained, "
-         "with the LSTM encoder frozen. Helps stabilize new domain adaptation. "
-         "Typical range: 2–5.")
-    parser.add_argument("--weight_decay", type=float, default=0.0,
-    help="Weight decay (L2 regularization) for AdamW optimizer. "
-         "Used to reduce overfitting; often set small or zero in continual learning. "
-         "Typical range: 0 – 1e-4.")
-    parser.add_argument("--bidirectional", action='store_true',
-                        help="Use bidirectional LSTM if set")
-    parser.add_argument("--patience", type=int, default=2,
-                        help="Patience for early stopping")
-    parser.add_argument("--forgetting_threshold", type=float, default=0.01,
-                        help="Threshold for detecting catastrophic forgetting")
-    parser.add_argument("--use_wandb", action="store_true", 
-                        help="Enable Weights & Biases logging (disabled by default)")
+                        help="Head-only warmup epochs before joint training.")
+    parser.add_argument("--weight_decay", type=float, default=0.0)
+
+    # --- Replay (unchanged) ---
+    parser.add_argument("--memory_size", type=int, default=2000)
+    parser.add_argument("--per_domain_cap", type=int, default=250)
+    parser.add_argument("--replay_batch_size", type=int, default=128)
+    parser.add_argument("--replay_ratio", type=float, default=0.5)
+    parser.add_argument("--replay_seen_only", action="store_true")
+
+    # --- SI specific (you already had these; keep as-is) ---
+    parser.add_argument("--si_c", type=float, default=0.08)
+    parser.add_argument("--si_xi", type=float, default=1e-3)
+    parser.add_argument("--si_c_warmup_epochs", type=int, default=3)
+    parser.add_argument("--si_c_schedule", type=str, default="cosine", choices=["const","linear","cosine"])
+    parser.add_argument("--si_omega_clip", type=float, default=50.0)
+    parser.add_argument("--si_exclude_bias_norm", action="store_true", default=True)
+    parser.add_argument("--si_micro_consolidate_k", type=int, default=0)
+
+    # === NEW: LwF scheduling knobs (to match your updated LwF trainer) ===
+    parser.add_argument("--alpha_min", type=float, default=0.3,
+                        help="Across-task α start; ramps to --alpha (cos/lin).")
+    parser.add_argument("--alpha_task_schedule", type=str, default="cosine",
+                        choices=["linear","cosine"], help="Across-task α schedule.")
+    parser.add_argument("--alpha_warmup_epochs", type=int, default=3,
+                        help="Within-task α warmup epochs 0→α_target.")
+    parser.add_argument("--alpha_warmup_schedule", type=str, default="cosine",
+                        choices=["linear","cosine"], help="Within-task α schedule.")
+    parser.add_argument("--T_max", type=float, default=5.0,
+                        help="Across-task T target (>= --temperature).")
+    parser.add_argument("--T_task_schedule", type=str, default="linear",
+                        choices=["linear","cosine"], help="Across-task T schedule.")
+    parser.add_argument("--T_warmup_epochs", type=int, default=0,
+                        help="Within-task T warmup epochs (0=off).")
+    parser.add_argument("--T_warmup_schedule", type=str, default="const",
+                        choices=["const","linear","cosine"], help="Within-task T schedule.")
+
+    # === NEW: EWC knobs + schedules (to match your updated EWC trainer) ===
+    parser.add_argument("--ewc_lambda", type=float, default=1400.0,
+                        help="Target EWC λ (stability↑ with larger values).")
+    parser.add_argument("--lambda_min", type=float, default=None,
+                        help="Across-task λ start; if None, set to 0.6*ewc_lambda.")
+    parser.add_argument("--lambda_task_schedule", type=str, default="cosine",
+                        choices=["linear","cosine"], help="Across-task λ schedule.")
+    parser.add_argument("--lambda_warmup_epochs", type=int, default=4,
+                        help="Within-task λ warmup epochs 0→λ_target.")
+    parser.add_argument("--lambda_warmup_schedule", type=str, default="cosine",
+                        choices=["linear","cosine"], help="Within-task λ schedule.")
+    parser.add_argument("--fisher_n_samples", type=int, default=64,
+                        help="Batches to estimate Fisher (None=all).")
+    parser.add_argument("--exclude_bias_norm", action="store_true", default=True,
+                        help="Exclude bias/Norm params from EWC penalty.")
+    parser.add_argument("--fisher_clip", type=float, default=None,
+                        help="Max clip for Fisher values (None=off).")
     
-    ## Replay-specific
 
-    parser.add_argument("--memory_size", type=int, default=2000,
-    help="Total number of exemplars stored across all domains (global replay buffer capacity).")
+    # --- GR (Generative Replay) specific (NEW) ---
+    # === Generative Replay (GR) ===
+    parser.add_argument("--gr_replay_ratio", type=float, default=0.5,
+        help="r in loss mix: loss = r*CE(real) + (1-r)*KL(replay). "
+            "Use this for GR to avoid confusion with exemplar replay's replay_ratio.")
+    parser.add_argument("--replay_samples_per_epoch", type=int, default=0,
+        help="If >0, fixed #synthetic sequences generated per epoch; else auto from gr_replay_ratio & #real.")
 
-    parser.add_argument("--per_domain_cap", type=int, default=250,
-    help="Maximum number of exemplars stored per domain. Reservoir sampling used if exceeded.")
+    parser.add_argument("--use_teacher_labels", action="store_true", default=True,
+        help="Use previous solver as a teacher to provide soft targets for generated samples.")
+    parser.add_argument("--distill_T", type=float, default=4.0,
+        help="Distillation temperature for teacher soft targets (Hinton T^2 scaling).")
+    parser.add_argument("--num_classes", type=int, default=2,
+        help="Fallback classes when no teacher is available (uniform soft targets).")
 
-    parser.add_argument("--replay_batch_size", type=int, default=128,
-    help="Batch size sampled from replay buffer per training step (before mixing with current batch).")
+    # VAE generator
+    parser.add_argument("--vae_hidden", type=int, default=64,
+        help="LSTM hidden size for the VAE.")
+    parser.add_argument("--vae_latent", type=int, default=32,
+        help="Latent dimension for the VAE.")
+    parser.add_argument("--vae_epochs", type=int, default=30,
+        help="Epochs to train VAE each domain.")
+    parser.add_argument("--vae_lr", type=float, default=1e-3,
+        help="VAE learning rate.")
+    parser.add_argument("--vae_batch_size", type=int, default=128,
+        help="Batch size for VAE training (often max(32, batch_size//2)).")
+    parser.add_argument("--vae_beta_start", type=float, default=0.0,
+        help="β-VAE schedule start value.")
+    parser.add_argument("--vae_beta_end", type=float, default=1.0,
+        help="β-VAE schedule end value.")
+    parser.add_argument("--vae_window_size", type=int, default=10)
 
-    parser.add_argument("--replay_ratio", type=float, default=0.5,
-    help="Fraction of each training batch replaced by replay samples (0.0 = no replay, 1.0 = only replay).")
 
-    parser.add_argument("--replay_seen_only", action="store_true",
-    help="If set, sample replay only from already seen domains (default). If not set, allow all domains.")
-    
-    ## SI specific
-    parser.add_argument("--si_c", type=float, default=0.6,
-    help="SI regularization strength c. Higher = more stability, less plasticity. Typical: 0.05–1.0.")
+    # Shapes / reproducibility
+    parser.add_argument("--num_features", type=int, default=140,
+        help="Per-timestep feature dimension (usually = input_size).")
+    parser.add_argument("--seed", type=int, default=42,
+        help="Random seed for GR/VAEs.")
 
-    parser.add_argument("--si_xi", type=float, default=1e-3,
-    help="SI damping term ξ to avoid division by zero in Ω update. Typical: 1e-3.")
+    args = parser.parse_args()
 
-    return parser.parse_args()
+    # Derived default: if lambda_min not set, tie to ewc_lambda
+    if args.lambda_min is None:
+        args.lambda_min = 0.6 * args.ewc_lambda
+
+    return args

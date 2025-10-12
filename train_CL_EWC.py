@@ -19,6 +19,7 @@ import evaluation as evaluate
 import result_utils as result_utils
 import wandb
 from tqdm import tqdm, trange
+
 # ===================================
 # Elastic Weight Consolidation Class
 # ===================================
@@ -64,77 +65,92 @@ class EWC:
             reg += (self.fisher[n] * delta ** 2).sum()
         return self.lambda_ * reg
 
+def tdim_ewc_random(
+    args, run_wandb, train_domain_loader, test_domain_loader, train_domain_order, device,
+    model, exp_no, num_epochs=500, learning_rate=0.01, patience=3
+):
+    """
+    - Track F1,AUC and confusion matrices
+    -   Compute BWT for F1 and AUC
+    -   Save richer JSON (plasticity/stability for F1 & AUC, CMs, costs)
+    -   plain EWC penalty, no λ scheduling) remains the same.
+    """
+   
 
-# ===================================
-# Main Training Function with EWC
-# ===================================
-def tdim_ewc_random(args, run_wandb, train_domain_loader, test_domain_loader, train_domain_order, device,
-                                   model, exp_no, num_epochs=500, learning_rate=0.01, patience=3):
-    """
-    For each training domain, trains the model on that domain (with early stopping using F1).
-    After training on a domain, it evaluates on all test domains, logs the metrics, updates
-    performance history, computes catastrophic forgetting, and plots graphs for precision,
-    recall, and confusion matrices.
-    """
-    exp_no=exp_no
+    exp_no = exp_no
     criterion = nn.CrossEntropyLoss()
     optimizer = optim.AdamW(model.parameters(), lr=learning_rate)
 
-
-    performance_stability = {test_domain: [] for test_domain in test_domain_loader.keys()}
-    performance_plasticity = {test_domain: [] for test_domain in test_domain_loader.keys()}
-    domain_training_cost = {test_domain: [] for test_domain in test_domain_loader.keys()}
+    # --- Metric containers (mirroring Code 1) ---
+    performance_stability   = {d: [] for d in test_domain_loader.keys()}  # F1 on prior domains after training current
+    performance_plasticity  = {d: [] for d in test_domain_loader.keys()}  # F1 pre & post on current domain
+    roc_auc_stability       = {d: [] for d in test_domain_loader.keys()}
+    roc_auc_plasticity      = {d: [] for d in test_domain_loader.keys()}
+    confusion_matrix_stability  = {d: [] for d in test_domain_loader.keys()}
+    confusion_matrix_plasticity = {d: [] for d in test_domain_loader.keys()}
+    domain_training_cost    = {d: [] for d in test_domain_loader.keys()}
 
     seen_domain = set()
     print(f"Training on {len(train_domain_order)} domains: {train_domain_order}")
     domain_to_id = {name: i for i, name in enumerate(train_domain_order)}
-    ewc_list = []  # Track EWC penalties from past tasks
+    ewc_list = []  # Keep EWC objects (plain/fixed-λ)
 
-    # ---- W&B Enrich config for this run -----
+    # ---- W&B config (make explicit EWC) ----
     run_wandb.config.update({
         "batch_size": args.batch_size,
-        "Loss Function": "CrossEntropyLoss",
+        "Loss Function": "CrossEntropyLoss + EWC",
         "optimizer": "AdamW",
         "weight_decay": 0.0,
         "train_domains": train_domain_order
     })
-
-    # --- W&B: watch gradients/params (adjust log_freq if heavy) ---
     run_wandb.watch(model, criterion=criterion, log="all", log_freq=50)
 
     previous_domain = None
-    best_model_state = None  # Initialize best_model_state to avoid unbound errors
+    best_model_state = None
+
+    # Helper: total EWC penalty (plain, no scheduling)
+    def total_ewc_penalty():
+        return sum([ewc.penalty() for ewc in ewc_list]) if ewc_list else 0.0
+
     for idx, train_domain in enumerate(tqdm(list(train_domain_order),
                                             desc="Train Domains", total=len(train_domain_order))):
-        
+
         domain_id = domain_to_id[train_domain]
         domain_epoch = 0
         if args.use_wandb:
+            import wandb
             wandb.define_metric(f"{train_domain}/epoch")
             wandb.define_metric(f"{train_domain}/*", step_metric=f"{train_domain}/epoch")
-        
-        
-        logging.info(f"====== Evaluate Current domain {train_domain} on model built in previous domain : {previous_domain} ======")
-        # Evaluate on same domain's test set
-        # Pre-train eval on this domain (plasticity)
+
+        logging.info(f"====== Evaluate current domain {train_domain} with model from: {previous_domain} ======")
+
+        # ---- Pre-train evaluation on current domain (Plasticity: PRE) ----
         if idx != 0:
-            all_y_true, all_y_pred, all_y_prob = [], [], []
             if best_model_state is not None:
                 model.load_state_dict(best_model_state)
             else:
                 logging.warning("best_model_state is uninitialized. Skipping model loading.")
             model.eval()
             if args.architecture == "LSTM_Attention_adapter":
-                metrics = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=domain_id)
+                m_pre = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=domain_id)
             else:
-                metrics = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=None)
-            current_f1= metrics["f1"]
-            performance_plasticity[train_domain].append(current_f1)
-            logging.info(f" F1 : Previous domain : {previous_domain} : Current Domain {train_domain}: {current_f1:.4f}")
-            # --- W&B ---
-            run_wandb.log({f"{train_domain}/pretrain_f1": float(current_f1)})
+                m_pre = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=None)
 
-        logging.info(f"====== Training on Domain: {train_domain} ======")
+            f1_pre  = float(m_pre["f1"])
+            auc_pre = float(m_pre.get("roc_auc", 0.0))
+            cm_pre  = m_pre.get("confusion_matrix", None)
+
+            performance_plasticity[train_domain].append(f1_pre)
+            roc_auc_plasticity[train_domain].append(auc_pre)
+            confusion_matrix_plasticity[train_domain].append(cm_pre)
+
+            run_wandb.log({
+                f"{train_domain}/pretrain_f1": f1_pre,
+                f"{train_domain}/pretrain_ROC_AUC": auc_pre
+            })
+            logging.info(f"[PRE] {train_domain}: F1={f1_pre:.4f} | AUC={auc_pre:.4f}")
+
+        logging.info(f"====== Training on Domain: {train_domain} (EWC) ======")
 
         best_f1 = -float("inf")
         epochs_no_improve = 0
@@ -142,83 +158,75 @@ def tdim_ewc_random(args, run_wandb, train_domain_loader, test_domain_loader, tr
         _sync(device)
         t0 = time.perf_counter()
 
-        # Train for the current domain with early stopping (evaluation on same domain's test set)
-        def total_ewc_penalty():
-            return sum([ewc.penalty() for ewc in ewc_list]) if ewc_list else 0.0
-
+        # ---- Train loop ----
         for epoch in trange(num_epochs, desc="training Epochs"):
             model.train()
-            domain_epoch +=1
+            domain_epoch += 1
             epoch_start = time.perf_counter()
             epoch_loss = 0.0
-            i = -1  # Initialize i to ensure it's defined even if the loop doesn't execute
+            i = -1
+
             for i, (X_batch, y_batch) in enumerate(train_domain_loader[train_domain]):
                 X_batch, y_batch = X_batch.to(device), y_batch.to(device)
-        
+
                 optimizer.zero_grad()
                 if args.architecture == "LSTM_Attention_adapter":
-                    outputs, _ = model(X_batch, domain_id=domain_id)  # Pass domain_id to the model
+                    outputs, _ = model(X_batch, domain_id=domain_id)
                 else:
-                    outputs, _ = model(X_batch)  # Pass domain_id to the model
-                
-                loss = criterion(outputs, y_batch.long()) + total_ewc_penalty()
+                    outputs, _ = model(X_batch)
+
+                ce = criterion(outputs, y_batch.long())
+                loss = ce + total_ewc_penalty()
                 loss.backward()
                 clip_grad_norm_(model.parameters(), max_norm=1.0)
                 optimizer.step()
-                epoch_loss += loss.item()
-            
-            epoch_loss /= (i+1) if i >= 0 else 1  # Avoid division by zero if the loop doesn't execute
-            
+                epoch_loss += float(loss.item())
+
+            epoch_loss /= (i + 1) if i >= 0 else 1
             _sync(device)
             epoch_time = time.perf_counter() - epoch_start
-            logging.info(f"[{train_domain}] | Epoch [{epoch+1}/{num_epochs}] | Train Loss: {epoch_loss:.4f} | Time: {epoch_time:.2f}s")    
+            logging.info(f"[{train_domain}] | Epoch [{epoch+1}/{num_epochs}] | Train Loss: {epoch_loss:.4f} | Time: {epoch_time:.2f}s")
 
-            # --- W&B: per-epoch train metrics ---
             run_wandb.log({
                 f"{train_domain}/epoch": domain_epoch,
                 f"{train_domain}/train_loss": float(epoch_loss),
-                f"{train_domain}/epoch_time_s": float(epoch_time),      
+                f"{train_domain}/epoch_time_s": float(epoch_time),
             })
 
-            # Evaluate on same domain's test set
-            
+            # ---- Validation on current domain ----
             all_y_true, all_y_pred, all_y_prob = [], [], []
             model.eval()
             test_loss = 0.0
             with torch.no_grad():
-                # for id_test_domain in range(len(test_domain_loader[train_domain])):
-                for X_batch, y_batch in test_domain_loader[train_domain]:
-                    X_batch, y_batch = X_batch.to(device), y_batch.to(device)
+                for Xb, yb in test_domain_loader[train_domain]:
+                    Xb, yb = Xb.to(device), yb.to(device)
                     if args.architecture == "LSTM_Attention_adapter":
-                        outputs, _ = model(X_batch, domain_id=domain_id)  # Pass domain_id to the model
+                        out, _ = model(Xb, domain_id=domain_id)
                     else:
-                        outputs, _ = model(X_batch)
-                    loss = criterion(outputs, y_batch.long())
-                    _, predicted = torch.max(outputs.data, 1)
-                    all_y_true.extend(y_batch.cpu().numpy())
-                    all_y_pred.extend(predicted.cpu().numpy())
-                    all_y_prob.extend(torch.nn.functional.softmax(outputs, dim=1)[:, 1].cpu().numpy())
-                    test_loss += loss.item()
+                        out, _ = model(Xb)
+                    loss_val = criterion(out, yb.long())
+                    _, pred = torch.max(out.data, 1)
+                    all_y_true.extend(yb.cpu().numpy())
+                    all_y_pred.extend(pred.cpu().numpy())
+                    all_y_prob.extend(torch.nn.functional.softmax(out, dim=1)[:, 1].cpu().numpy())
+                    test_loss += float(loss_val.item())
             test_loss /= max(1, len(test_domain_loader[train_domain]))
-              
-            metrics = evaluate.evaluate_metrics(np.array(all_y_true), np.array(all_y_pred), 
-                                np.array(all_y_prob), train_domain, train_domain)
-            current_f1 = metrics["f1"]
-            current_auc_roc = metrics["roc_auc"]
-            
-            logging.info(f"[{train_domain}] | Epoch: {epoch+1}/{num_epochs} |  Test Loss: {test_loss}  | F1: {current_f1:.4f} | AUC-ROC: {current_auc_roc:.4f}")
-            
-             # --- W&B: per-epoch val metrics (log numeric items) ---
-            # after you compute validation metrics
+
+            metrics = evaluate.evaluate_metrics(
+                np.array(all_y_true), np.array(all_y_pred), np.array(all_y_prob),
+                train_domain, train_domain
+            )
+            current_f1 = float(metrics["f1"])
+            current_auc_roc = float(metrics.get("roc_auc", 0.0))
+
+            logging.info(f"[{train_domain}] | Epoch: {epoch+1}/{num_epochs} | Val Loss: {test_loss:.4f} | F1: {current_f1:.4f} | AUC-ROC: {current_auc_roc:.4f}")
+
             run_wandb.log({
                 f"{train_domain}/epoch": domain_epoch,
                 f"{train_domain}/val_loss": float(test_loss),
                 f"{train_domain}/val_f1": float(current_f1),
                 f"{train_domain}/val_ROC_AUC": float(current_auc_roc)
-                # plus any others from your metrics dict...
             })
-
-
 
             if current_f1 > best_f1:
                 best_f1 = current_f1
@@ -228,101 +236,130 @@ def tdim_ewc_random(args, run_wandb, train_domain_loader, test_domain_loader, tr
             else:
                 epochs_no_improve += 1
                 logging.info(f"No improvement. Count: {epochs_no_improve}")
-            
+
             if epochs_no_improve >= patience:
                 logging.info(f"Early stopping triggered for {train_domain} at epoch {epoch+1}")
-                # print(f"Early stopping triggered for {train_domain} at epoch {epoch+1}")
                 break
+
         _sync(device)
         domain_training_time = time.perf_counter() - t0
         logging.info(f"Training time for {train_domain}: {domain_training_time:.2f} seconds")
-        domain_training_cost[train_domain].append(domain_training_time)
-        
-        # Restore best state and save model checkpoint for current domain
-        if best_model_state is not None:
+        domain_training_cost[train_domain].append(float(domain_training_time))
 
+        # ---- Restore best and save checkpoint ----
+        if best_model_state is not None:
             model.load_state_dict(best_model_state)
             model_save_path = f"models/exp_no_{exp_no}_{args.architecture}_{args.algorithm}_{args.scenario}/best_model_after_{train_domain}.pt"
             os.makedirs(os.path.dirname(model_save_path), exist_ok=True)
             torch.save(best_model_state, model_save_path)
             logging.info(f"Best model for {train_domain} saved to {model_save_path}")
             previous_domain = train_domain
-        # print(f"Best model for {train_domain} saved to {model_save_path}")
         else:
             logging.info(f"No improvement for {train_domain}. Model not saved.")
-        # print(f"No improvement for {train_domain}. Model not saved.")
 
-        # Create EWC object for this domain and append to list
+        # ---- Build EWC object for this domain (plain/fixed-λ) ----
         model.train()
-        ewc_data_loader = train_domain_loader[train_domain]
-        ewc_instance = EWC(model, ewc_data_loader, device, lambda_=1200, fisher_n_samples=None)
+        ewc_instance = EWC(model, train_domain_loader[train_domain], device, lambda_=1200, fisher_n_samples=None)
         ewc_list.append(ewc_instance)
-        
-        # Evaluate on the best model on the currently trained domain 
+
+        # ---- Post-train evaluation on current domain (Plasticity: POST; Stability: add current too) ----
         model.load_state_dict(best_model_state)
         model.eval()
         if args.architecture == "LSTM_Attention_adapter":
-            best_metrices = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=domain_id)
+            m_post = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=domain_id)
         else:
-            best_metrices = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=None)
-        
-        current_f1 = best_metrices["f1"]
-        performance_plasticity[train_domain].append(current_f1)
-        performance_stability[train_domain].append(current_f1)
-        logging.info(f" F1 : Current Domain {train_domain}: {current_f1:.4f}")
-        logging.info(f"performance_plasticity: {performance_plasticity}")
-        logging.info(f"metrics: {best_metrices}")
+            m_post = evaluate_model.eval_model(args, model, test_domain_loader, train_domain, device, domain_id=None)
 
+        f1_post  = float(m_post["f1"])
+        auc_post = float(m_post.get("roc_auc", 0.0))
+        cm_post  = m_post.get("confusion_matrix", None)
 
+        performance_plasticity[train_domain].append(f1_post)
+        performance_stability[train_domain].append(f1_post)
+        roc_auc_plasticity[train_domain].append(auc_post)
+        roc_auc_stability[train_domain].append(auc_post)
+        confusion_matrix_plasticity[train_domain].append(cm_post)
+        confusion_matrix_stability[train_domain].append(cm_post)
 
-        # Generalization to all previous domains:
+        logging.info(f"[POST] {train_domain}: F1={f1_post:.4f} | AUC={auc_post:.4f}")
+
+        # ---- Stability across seen (previous) domains ----
         logging.info(f"====== Evaluating on all previous domains after training on {train_domain} ======")
         seen_domain.add(train_domain)
         for test_domain in tqdm(seen_domain, desc="Stability test"):
-            print(test_domain)
             if test_domain == train_domain:
                 continue
             model.eval()
             if args.architecture == "LSTM_Attention_adapter":
-                metrics = evaluate_model.eval_model(args, model, test_domain_loader, test_domain, device, domain_id=domain_to_id[test_domain])
+                m_prev = evaluate_model.eval_model(args, model, test_domain_loader, test_domain, device, domain_id=domain_to_id[test_domain])
             else:
-                metrics = evaluate_model.eval_model(args, model, test_domain_loader, test_domain, device, domain_id=None)
-            current_f1 = metrics["f1"]
-            performance_stability[test_domain].append(current_f1)
-            
-            logging.info(f"performance_stability | {test_domain}: {performance_stability[test_domain]}")
+                m_prev = evaluate_model.eval_model(args, model, test_domain_loader, test_domain, device, domain_id=None)
+
+            f1_prev  = float(m_prev["f1"])
+            auc_prev = float(m_prev.get("roc_auc", 0.0))
+            cm_prev  = m_prev.get("confusion_matrix", None)
+
+            performance_stability[test_domain].append(f1_prev)
+            roc_auc_stability[test_domain].append(auc_prev)
+            confusion_matrix_stability[test_domain].append(cm_prev)
+
+            logging.info(f"Stability | {test_domain}: F1={f1_prev:.4f} | AUC={auc_prev:.4f}")
 
         print(f"====== Finished Training on Domain: {train_domain} ======")
 
-    # Final Metrics: BWT / FWT
-    logging.info(f"====== Final Metrics after training on all domains ======")
-    bwt_values, bwt_dict, bwt_values_dict = result_utils.compute_BWT(performance_stability, train_domain_order)
-    fwt_values, fwt_dict = result_utils.compute_FWT(performance_plasticity, train_domain_order)
-    logging.info(f"\n BWT: {bwt_values}")
-    logging.info(f"\n BWT of all previous domain corresponding to the training domain: {bwt_values_dict}")
-    logging.info(f"\n BWT per domain: {bwt_dict}")
+    # ===== Final Metrics (F1) =====
+    logging.info("====== Final Metrics (F1) ======")
+    bwt_values_f1, bwt_dict_f1, bwt_values_dict_f1 = result_utils.compute_BWT(performance_stability, train_domain_order)
+    plasticity_values_f1, plasticity_dict_f1       = result_utils.compute_plasticity(performance_plasticity, train_domain_order)
+    logging.info(f"BWT (F1): {bwt_values_f1}")
+    logging.info(f"BWT per domain (F1): {bwt_dict_f1}")
+    logging.info(f"Plasticity (F1): {plasticity_values_f1}")
 
-    logging.info(f"FWT: {fwt_values}")
-    logging.info(f"FWT per domain: {fwt_dict}")
+    # ===== Final Metrics (AUC) =====
+    logging.info("====== Final Metrics (ROC-AUC) ======")
+    bwt_values_auc, bwt_dict_auc, bwt_values_dict_auc = result_utils.compute_BWT(roc_auc_stability, train_domain_order)
+    plasticity_values_auc, plasticity_dict_auc        = result_utils.compute_plasticity(roc_auc_plasticity, train_domain_order)
+    logging.info(f"BWT (AUC): {bwt_values_auc}")
+    logging.info(f"BWT per domain (AUC): {bwt_dict_auc}")
+    logging.info(f"Plasticity (AUC): {plasticity_values_auc}")
 
-
-
+    # ===== Save richer JSON =====
     results_to_save = {
         "exp_no": exp_no,
+        "train_domain_order": train_domain_order,
+
+        # F1 series
         "performance_stability": performance_stability,
         "performance_m": performance_plasticity,
-        "BWT_values": bwt_values,
-        "BWT_dict": bwt_dict,
-        "FWT_values": fwt_values,
-        "FWT_dict": fwt_dict,
-        "train_domain_order": train_domain_order,
+
+        # AUC series
+        "roc_auc_stability": roc_auc_stability,
+        "roc_auc_plasticity": roc_auc_plasticity,
+
+        # Confusions & cost
+        "confusion_matrix_stability": confusion_matrix_stability,
+        "confusion_matrix_plasticity": confusion_matrix_plasticity,
         "domain_training_cost": domain_training_cost,
+
+        # Final aggregates (F1)
+        "BWT_values_f1": bwt_values_f1,
+        "BWT_dict_f1": bwt_dict_f1,
+        "plasticity_values_f1": plasticity_values_f1,
+        "plasticity_dict_f1": plasticity_dict_f1,
+
+        # Final aggregates (AUC)
+        "BWT_values_auc": bwt_values_auc,
+        "BWT_dict_auc": bwt_dict_auc,
+        "plasticity_values_auc": plasticity_values_auc,
+        "plasticity_dict_auc": plasticity_dict_auc
     }
 
-    save_results_as_json(results_to_save, filename=f"{exp_no}_experiment_results_{args.architecture}_{args.algorithm}_{args.scenario}.json")
-    logging.info("Final training complete. Results saved.")
+    from utils import _json_safe, save_results_as_json
+    results_to_save = _json_safe(results_to_save)
+    out_name = f"{exp_no}_experiment_results_{args.architecture}_{args.algorithm}_{args.scenario}.json"
+    save_results_as_json(results_to_save, filename=out_name)
+    logging.info(f"Final training complete. Results saved to {out_name}")
 
-    run_wandb.summary["BWT/list"] =  bwt_values
-    run_wandb.summary["FWT/list"] =  fwt_values
-
-
+    # W&B summaries (optional)
+    run_wandb.summary["BWT_F1/list"]  = bwt_values_f1
+    run_wandb.summary["BWT_AUC/list"] = bwt_values_auc

@@ -29,19 +29,19 @@ def avg_bwt_per_domain(data, domain_order):
     return out, bwt_values_dict
 
 
-def compute_FWT(performance_plasticity, domain_order):
-    fwt_dict = {}
+def compute_plasticity(performance_plasticity, domain_order):
+    plasticity_dict = {}
     for k, vals in performance_plasticity.items():
         if len(vals) == 1:
             continue
  
-        fwt_dict[k] = vals[0] - vals[1]
-    fwt_values = avg_fwt_per_domain(fwt_dict, domain_order)    
+        plasticity_dict[k] = vals[1] - vals[0]
+    plasticity_values = avg_plasticity_per_domain(plasticity_dict, domain_order)    
 
 
-    return fwt_values, fwt_dict
+    return plasticity_values, plasticity_dict
 
-def avg_fwt_per_domain(data: dict, domain_order: list) -> list[float]:
+def avg_plasticity_per_domain(data: dict, domain_order: list) -> list[float]:
     vals = []
 
     for k in domain_order:

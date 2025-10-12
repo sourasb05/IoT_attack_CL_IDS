@@ -19,7 +19,7 @@ HIDDEN=10
 OUTPUT=2
 LAYERS=1
 DROPOUT=0.05
-PATIENCE=50
+PATIENCE=100
 FORGET=0.01
 ALPHA=1.0
 T=4.0
@@ -32,7 +32,7 @@ EXTRA_FLAGS=() # (--bidirectional)   # e.g., EXTRA_FLAGS=(--bidirectional)
 
 TS="$(date +%Y%m%d-%H%M%S)"
 
-for i in {1..3}; do
+for i in {1..10}; do
   PAD=$(printf "%02d" "$i")
   RUN_NAME="exp-${PAD}-${TS}"
 

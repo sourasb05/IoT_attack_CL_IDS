@@ -206,25 +206,9 @@ def main():
                learning_rate=args.learning_rate, patience=args.patience, si_c=args.si_c, si_xi=args.si_xi)
     elif algorithm == "EWC":
         # Train using EWC
-        train_ewc.tdim_ewc_random(args, run_wandb, train_domains_loader, test_domains_loader, train_domain_order, device,
-                                        model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience) 
-        # elif scenario in ["w2b","b2w","toggle"]:
-        #    EWC_w2b_b2w_togg.tdim_ewc(args, run_wandb, train_domains_loader, test_domains_loader, device,
-        #                                 model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience)
-        
-        """elif scenario == "zero_shot":
-            train_ewc_zs.train_domain_incremental_model(
-                    scenario,device,train_domains_loader,test_domains_loader, full_domains_loader, model,
-                    num_epochs=args.epochs,
-                    learning_rate=args.learning_rate,
-                    patience=args.patience,
-                    forgetting_threshold=args.forgetting_threshold,
-                    tau=0.3,
-                    delta=0.8
-                )
-
-        else:
-            raise ValueError(f"Unknown scenario for EWC algorithm: {scenario}")"""
+        train_ewc.tdim_ewc_random(args, run_wandb, train_domains_loader, test_domains_loader, train_domain_order, 
+                                device, model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate,
+                                patience=args.patience) 
         
     elif algorithm == "LwF":
             train_lwf.tdim_lwf_random(args, run_wandb, train_domains_loader, test_domains_loader, train_domain_order, device,
@@ -233,11 +217,11 @@ def main():
                                         weight_decay=args.weight_decay)
         
     elif algorithm == "GR":
-            train_genreplay.tdim_gr_random(args, run_wandb, train_domains_loader, test_domains_loader, train_domain_order, device, 
-                                        model, exp_no,num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience,
-                                        vae_hidden=64, vae_latent=32, window_size=1, num_features=args.input_size,
-                                        vae_epochs=30, vae_lr=1e-3, replay_samples_per_epoch=1000, replay_ratio=0.5, 
-                                        use_teacher_labels=True)
+            train_genreplay.tdim_gr_random(args, run_wandb, train_domains_loader, test_domains_loader, train_domain_order, device,
+                                           model, exp_no, num_epochs=args.epochs, learning_rate=args.learning_rate, patience=args.patience,
+                                           vae_hidden=args.vae_hidden, vae_latent=args.vae_latent, window_size=args.vae_window_size, num_features=args.num_features,
+                                           vae_epochs=args.vae_epochs, vae_lr=args.vae_lr, replay_samples_per_epoch=args.replay_samples_per_epoch,
+                                           replay_ratio=args.gr_replay_ratio, use_teacher_labels=args.use_teacher_labels, T=args.distill_T)
             
     elif algorithm == "Replay":
             tdim_replay.tdim_replay( args, run_wandb, train_domains_loader, test_domains_loader, device,model, exp_no, num_epochs=args.epochs,
