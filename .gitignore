@@ -207,7 +207,8 @@ marimo/_lsp/
 __marimo__/
 
 
-data/
+data/attack_data/
+data/Dis_flooding_scale/
 logs/
 old_results/
 results/
