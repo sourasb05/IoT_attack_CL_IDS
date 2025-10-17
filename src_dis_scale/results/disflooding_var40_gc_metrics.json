@@ -1,0 +1,25 @@
+{
+    "domain": "disflooding_var40_gc",
+    "checkpoint": "checkpoints/disflooding_var40_gc_LSTM.pth",
+    "best_val_acc": 0.9973560517038778,
+    "epochs_trained": 147,
+    "val_loss": 0.009382740594446659,
+    "accuracy": 0.9973560517038778,
+    "f1": 0.9973707274320771,
+    "roc_auc": 0.9999123112274771,
+    "confusion_matrix": [
+        [
+            1688,
+            0
+        ],
+        [
+            9,
+            1707
+        ]
+    ],
+    "support": {
+        "negatives": 1688,
+        "positives": 1716,
+        "total": 3404
+    }
+}

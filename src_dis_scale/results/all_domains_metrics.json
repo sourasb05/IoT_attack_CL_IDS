@@ -1,0 +1,77 @@
+{
+    "disflooding_var25_base": {
+        "domain": "disflooding_var25_base",
+        "checkpoint": "checkpoints/disflooding_var25_base_LSTM.pth",
+        "best_val_acc": 0.764018691588785,
+        "epochs_trained": 581,
+        "val_loss": 0.519376277923584,
+        "accuracy": 0.764018691588785,
+        "f1": 0.7587195413282369,
+        "roc_auc": 0.8552591314140227,
+        "confusion_matrix": [
+            [
+                841,
+                195
+            ],
+            [
+                310,
+                794
+            ]
+        ],
+        "support": {
+            "negatives": 1036,
+            "positives": 1104,
+            "total": 2140
+        }
+    },
+    "disflooding_var30_base": {
+        "domain": "disflooding_var30_base",
+        "checkpoint": "checkpoints/disflooding_var30_base_LSTM.pth",
+        "best_val_acc": 0.7037383177570093,
+        "epochs_trained": 544,
+        "val_loss": 0.6069926023483276,
+        "accuracy": 0.7037383177570093,
+        "f1": 0.6931268151016456,
+        "roc_auc": 0.7790169828213306,
+        "confusion_matrix": [
+            [
+                790,
+                246
+            ],
+            [
+                388,
+                716
+            ]
+        ],
+        "support": {
+            "negatives": 1036,
+            "positives": 1104,
+            "total": 2140
+        }
+    },
+    "disflooding_var35_base": {
+        "domain": "disflooding_var35_base",
+        "checkpoint": "checkpoints/disflooding_var35_base_LSTM.pth",
+        "best_val_acc": 0.7490654205607477,
+        "epochs_trained": 505,
+        "val_loss": 0.5521977543830872,
+        "accuracy": 0.7490654205607477,
+        "f1": 0.7660130718954248,
+        "roc_auc": 0.8338299479603828,
+        "confusion_matrix": [
+            [
+                724,
+                312
+            ],
+            [
+                225,
+                879
+            ]
+        ],
+        "support": {
+            "negatives": 1036,
+            "positives": 1104,
+            "total": 2140
+        }
+    }
+}
